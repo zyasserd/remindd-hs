@@ -417,14 +417,20 @@ notify title body bs = do
 
 -- | One detached shell pipeline:
 --
--- > ( k=$(notify-send --action=id=Label --wait TITLE BODY)
+-- > ( k=$(notify-send --app-name=remindd \
+-- >       -h string:desktop-entry:remindd --action=id=Label --wait TITLE BODY)
 -- >   case "$k" in 'id') <callback>;; esac ) </dev/null >/dev/null 2>&1 &
 --
 -- @--wait@ blocks until the notification closes and prints the clicked
 -- action; backgrounding keeps that from stalling the timer that called us.
+-- The fixed @--app-name@ (and @desktop-entry@) make GNOME group every
+-- reminder's notifications under a single @remindd@ app instead of the
+-- default @notify-send@.
 pipeline :: String -> String -> [(Button, String)] -> String
 pipeline title body bcs =
-  "( k=$(notify-send " ++ concatMap (action . fst) bcs ++ "--wait "
+  "( k=$(notify-send "
+    ++ "--app-name=remindd -h " ++ shq "string:desktop-entry:remindd" ++ " "
+    ++ concatMap (action . fst) bcs ++ "--wait "
     ++ shq title ++ " " ++ shq body ++ "); "
     ++ "case \"$k\" in " ++ concatMap arm bcs
     ++ "esac ) </dev/null >/dev/null 2>&1 &"

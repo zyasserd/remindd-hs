@@ -19,7 +19,7 @@ The flake exposes the module as `homeManagerModules.remindd`:
 
 ```nix
 # flake.nix inputs
-inputs.remindd-hs.url = "github:zyasserd/sched";
+inputs.remindd-hs.url = "github:zyasserd/remindd-hs";
 
 # home.nix
 imports = [ inputs.remindd-hs.homeManagerModules.remindd ];
@@ -91,7 +91,13 @@ state actions.  Ordinary `do` notation; anything `IO` lifts with `io`.
 
 `notify title body [button ...]` sends a `notify-send` notification with
 buttons.  `button id label (Act ())` adds one; clicking it runs the action.
-`snooze seconds` silences a reminder for a while.
+`snooze seconds` silences a reminder for a while.  Notifications are sent by a
+`notify-send --wait` kept alive in the background, and carry
+`--app-name=remindd` plus a `desktop-entry` hint.  Together with the
+`remindd.desktop` the module registers via `xdg.desktopEntries`, GNOME groups
+every reminder under a single **remindd** source.  Both parts matter: without
+the desktop entry GNOME keeps one source per pid, and without `--wait` it
+destroys the source the instant `notify-send` exits.
 
 ## Design
 

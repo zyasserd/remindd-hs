@@ -51,6 +51,20 @@ in
   config = lib.mkIf cfg.enable {
     home.packages = [ cfg.package pkgs.libnotify ];
 
+    # The notifications identify themselves as the `remindd` app (see Lib.hs),
+    # so GNOME can group them under one source.  That only works if GNOME can
+    # resolve the id to an installed desktop entry -- without it, GNOME keeps a
+    # separate source per notify-send pid and never groups.
+    xdg.desktopEntries.remindd = {
+      name = "remindd";
+      comment = "Tiny reminder scheduler";
+      exec = "remindd";
+      icon = "appointment-soon";
+      terminal = false;
+      categories = [ "Utility" ];
+      noDisplay = true;
+    };
+
     systemd.user.services."${checkServiceName}" = {
       Unit.Description = "remindd: evaluate reminders";
       Service = {
