@@ -9,8 +9,8 @@ remind "battery" (5 * minutes) $ do
   notify "Battery" "Plug in" []          -- WHAT
 ```
 
-Run `sched check` from an external timer (cron, systemd); `sched list` and
-`sched run <name>` are for by hand.  State lives in
+Run `remindd check` from an external timer (cron, systemd); `remindd list` and
+`remindd run <name>` are for by hand.  State lives in
 `$XDG_STATE_HOME/sched/state` (fallback `~/.local/state/sched/state`).
 
 ## Install (Home Manager)
@@ -30,17 +30,17 @@ services.remindd = {
 };
 ```
 
-The module compiles `program` with microhs into the `sched` command, installs
-it next to `libnotify`, and runs `sched check` on a systemd **user timer**
-(`remindd-check`).  The timer's period is `sched interval` — the shortest
+The module compiles `program` with microhs into the `remindd` command, installs
+it next to `libnotify`, and runs `remindd check` on a systemd **user timer**
+(`remindd-check`).  The timer's period is `remindd interval` — the shortest
 reminder period — read from the built program at evaluation time, so it
 behaves like remindd's derived interval.
 
 ## Build a standalone binary
 
 ```
-mhs a.hs -o sched      # microhs (needs a C compiler)
-ghc a.hs -o sched      # GHC (Lib.hs alongside; e.g. `nix-shell -p ghc`)
+mhs a.hs -o remindd      # microhs (needs a C compiler)
+ghc a.hs -o remindd      # GHC (Lib.hs alongside; e.g. `nix-shell -p ghc`)
 ```
 
 `Lib.hs` is a single source for both compilers: it avoids microhs-only
@@ -52,11 +52,11 @@ with GHC.
 
 | command                     | meaning                                          |
 |-----------------------------|--------------------------------------------------|
-| `sched check`               | evaluate due reminders; send notifications       |
-| `sched list`                | per reminder: next, lastDone, snoozedUntil       |
-| `sched interval`            | shortest period, in seconds (for a timer)        |
-| `sched run <name>`          | fire a reminder now                              |
-| `sched run <name> <button>` | run one of its notification buttons              |
+| `remindd check`               | evaluate due reminders; send notifications       |
+| `remindd list`                | per reminder: next, lastDone, snoozedUntil       |
+| `remindd interval`            | shortest period, in seconds (for a timer)        |
+| `remindd run <name>`          | fire a reminder now                              |
+| `remindd run <name> <button>` | run one of its notification buttons              |
 
 ## Writing a schedule
 
@@ -68,7 +68,7 @@ with GHC.
   stops it.  `sustained n test` is true only after `n` true readings in a row.
 - `onFire (Act ())` adds a side effect.
 - `handler name (Act ())` registers a button action, run by
-  `sched run <name> <name>`.
+  `remindd run <name> <name>`.
 - `var "slot" default :: Var a` declares typed state; `get`/`set`/`modify`
   read and write it.  A reminder's state is isolated from every other's.
 
@@ -101,5 +101,5 @@ reminder is next due.
 
 - Give every `var` definition a type signature.
 - `Prelude` does not re-export `fromMaybe`/`readMaybe`; import them explicitly.
-- `mhs a.hs -o sched` needs a C compiler; the interpreter (`mhs -r a.hs -- …`)
+- `mhs a.hs -o remindd` needs a C compiler; the interpreter (`mhs -r a.hs -- …`)
   does not.

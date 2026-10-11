@@ -24,6 +24,7 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirecto
 import System.Environment (lookupEnv, getArgs)
 import System.IO (openTempFile, hClose)
 import Data.Maybe (fromMaybe)
+import Data.Char (isSpace)
 import Text.Read (readMaybe)
 
 
@@ -307,17 +308,24 @@ interval rs = putStrLn (case map rEvery rs of [] -> "none"; ps -> show (minimum 
 nowSeconds :: IO Int
 nowSeconds = fmap (fromMaybe 0) (readInt "date +%s")
 
--- | Run a shell command and read its stdout as an integer.  Goes through a
--- temp file rather than 'readProcess', because 'readProcess' means different
--- things under microhs and GHC; 'system' always runs @/bin/sh -c@.
-readInt :: String -> IO (Maybe Int)
-readInt c = do
+-- | Run a shell command and read its stdout.  Goes through a temp file rather
+-- than 'readProcess', because 'readProcess' means different things under
+-- microhs and GHC; 'system' always runs @/bin/sh -c@.
+readCmd :: String -> IO String
+readCmd c = do
   (p, h) <- openTempFile "/tmp" "sched"
   hClose h
   _ <- system (c ++ " 2>/dev/null > " ++ shq p)
   s <- readFile p
   removeFile p
-  return (readMaybe s)
+  return (trim s)
+
+trim :: String -> String
+trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
+
+-- | Run a shell command and parse its stdout as an integer.
+readInt :: String -> IO (Maybe Int)
+readInt c = fmap readMaybe (readCmd c)
 
 -- | One line per field: @reminder key value@.  Names and keys have no spaces;
 -- values may (a 'show'n value never contains a raw newline).
@@ -353,7 +361,7 @@ withLock :: FilePath -> IO () -> IO ()
 withLock dir act = do
   createDirectoryIfMissing True dir
   ok <- acquire lock
-  if not ok then die "sched: another instance holds the lock" else do
+  if not ok then die "remindd: another instance holds the lock" else do
     act
     _ <- system ("rm -rf " ++ shq lock)
     return ()
@@ -430,11 +438,13 @@ pipeline title body bcs =
 --------------------------------------------------------------------------------
 
 -- | Dispatch @check | list | interval | run <name> [<handler>]@.
--- The program path used in callbacks can be overridden with @SCHED_PROG@.
+-- The program path used in callbacks can be overridden with @SCHED_PROG@;
+-- otherwise the executable is assumed to be named @remindd@ (what Nix
+-- installs, so it is on @PATH@).
 defaultMain :: Schedule a -> IO ()
 defaultMain sched = do
   args <- getArgs
-  prog <- fmap (fromMaybe "sched") (lookupEnv "SCHED_PROG")
+  prog <- fmap (fromMaybe "remindd") (lookupEnv "SCHED_PROG")
   let rs = collect sched
   case args of
     ["interval"] -> interval rs
@@ -445,7 +455,7 @@ defaultMain sched = do
         ["list"] -> list dir rs
         ["run", name] -> runCmd dir prog rs name Nothing
         ["run", name, h] -> runCmd dir prog rs name (Just h)
-        _ -> die "usage: sched check | list | interval | run <name> [<handler>]"
+        _ -> die "usage: remindd check | list | interval | run <name> [<handler>]"
 
 -- | The state directory: @$XDG_STATE_HOME/sched@, or @~/.local/state/sched@
 -- when that is unset.  The store is the file @<dir>/state@.

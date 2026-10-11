@@ -10,11 +10,11 @@
     let
       hmModule = import ./nix/home-manager.nix;
 
-      # Compile one schedule (the inline `program` source) into a `sched`
-      # binary.  `Lib` comes from this flake's source tree.
+      # Compile one schedule (the inline `program` source) into the `remindd`
+      # command.  `Lib` comes from this flake's source tree.
       mkSched = { pkgs, program }:
         pkgs.stdenv.mkDerivation {
-          pname = "sched";
+          pname = "remindd";
           version = "0.1.0";
 
           src = ./.;
@@ -24,13 +24,13 @@
           buildPhase = ''
             runHook preBuild
             cp ${pkgs.writeText "a.hs" program} a.hs
-            mhs a.hs -o sched
+            mhs a.hs -o remindd
             runHook postBuild
           '';
 
           installPhase = ''
             runHook preInstall
-            install -Dm755 sched $out/bin/sched
+            install -Dm755 remindd $out/bin/remindd
             runHook postInstall
           '';
         };
@@ -48,7 +48,7 @@
         pkgs = import nixpkgs { inherit system; };
       in
       {
-        packages.sched = mkSched { inherit pkgs; program = builtins.readFile ./a.hs; };
-        packages.default = self.packages.${system}.sched;
+        packages.remindd = mkSched { inherit pkgs; program = builtins.readFile ./a.hs; };
+        packages.default = self.packages.${system}.remindd;
       });
 }
