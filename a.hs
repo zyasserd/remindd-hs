@@ -8,71 +8,59 @@
 --
 --     mhs a.hs -o sched
 --
--- The @Sched@ module provides the types, classes and the runner; here you
--- only describe /what/ to do.  State lives in
--- @$XDG_STATE_HOME/sched/<name>.state@ (fallback @~/.local/state/sched@).
+-- A reminder is a @Sched ()@ program.  'getS' / 'setS' read and write
+-- persisted state, 'now' is the clock, 'cmd' runs a shell command (returning
+-- its exit status, 0 = success), and 'parseFirstIntCmd' captures a command's
+-- stdout as a number (for external last-done sources).  'every' and
+-- 'condition' are just monadic functions, so a reminder can also be plain
+-- @do@ notation.
 --
--- microhs note: pass /named/ functions or annotated values to the smart
--- constructors.  Inline overloaded expressions such as @return ()@ or
--- @pure True@ cannot be resolved by microhs and must be written
--- @(return () :: IO ())@ etc.
+-- 'namespace' gives each reminder its own state namespace, so the
+-- @\"count\"@ below and the combinators' @\"lastDone\"@ never clash.
+--
+-- State lives in @$XDG_STATE_HOME/sched/state@ (fallback
+-- @~/.local/state/sched@).
 
 module Main (main) where
 
+import Prelude hiding (min)
 import Sched
-import System.Process (callCommand)
 
--- Actions ---------------------------------------------------------------
--- Either an @IO ()@ function or a shell command 'String'.
+schedule :: Sched ()
+schedule = do
+  -- Every 2h, unless the lock file was touched more recently (so it will not
+  -- fire early if the action ran in between).
+  namespace "stretch" $
+    everyWith (2 * hr) flakeTime $
+      cmd "notify-send 'Stretch' 'Time to move'"
 
-stretchAction :: IO ()
-stretchAction = callCommand "notify-send 'Stretch' 'Time to move'"
+  -- Check every 30m; after 12 consecutive trues the action fires.  The
+  -- true-streak is persisted, so it accumulates across runs.
+  namespace "powerSaver" $
+    condition (30 * min) 12 powerCheck $
+      cmd "notify-send 'Power saver' 'Still on power-saver'"
 
-backupAction :: IO ()
-backupAction = callCommand "notify-send 'Backup' 'Run your backups'"
+  -- Every 24h.
+  namespace "dailyBackup" $
+    every day $
+      cmd "notify-send 'Backup' 'Run your backups'"
 
-powerAction :: IO ()
-powerAction = callCommand "notify-send 'Power saver' 'Still on power-saver'"
-
--- Conditions ------------------------------------------------------------
--- Either an @IO Bool@ function or a shell command (exit 0 = true).
-
-powerCheck :: IO Bool
-powerCheck = shCheck "powerprofilesctl get | grep -vq power-saver"
-
--- Last-done sources -----------------------------------------------------
--- Either an @IO Int@ function, a constant 'Int', or a shell command whose
--- stdout is Unix seconds.
-
-flakeTime :: IO Int
-flakeTime = shTime "stat -c %Y /etc/nixos/flake.lock 2>/dev/null || echo 0"
-
--- The schedule ----------------------------------------------------------
-
-reminders :: [Reminder]
-reminders =
-  [ -- Every 2h, unless the lock file was already touched more recently.
-    -- The override command's stdout is used as the last-done time, so the
-    -- reminder will not fire early if the action ran in between.
-    intervalWith "stretch" 7200 flakeTime stretchAction
-
-    -- Check every 30m.  After 12 consecutive trues the action fires.
-    -- The true-streak is persisted, so it accumulates across runs.
-  , condition "powerSaver" 1800 12 powerCheck powerAction
-
-    -- A plain interval: run the action whenever 24h have passed.
-  , interval "dailyBackup" 86400 backupAction
-
-    -- A custom state machine: fire every third time it is evaluated.
-  , machine "everyThird" everyThird
-  ]
-
-everyThird :: Int -> Store -> IO (Store, Maybe (IO ()))
-everyThird _ st =
-  let n = getI "count" st + 1
-  in if n >= 3
-       then return (setI "count" 0 st, Just (callCommand "notify-send 'Third' 'Tick'"))
-       else return (setI "count" n st, Nothing)
+  -- Custom logic: fire every third time.  Ordinary @do@ notation is enough.
+  namespace "everyThird" $ do
+    n <- getS "count"
+    let n' = n + 1
+    if n' >= 3
+      then do
+        setS "count" 0
+        _ <- cmd "notify-send 'Third' 'Tick'"
+        return ()
+      else setS "count" n'
+  where
+    -- External last-done source: the mtime of the flake lock file.
+    flakeTime :: Sched Int
+    flakeTime = parseFirstIntCmd "stat -c %Y /etc/nixos/flake.lock 2>/dev/null || echo 0"
+    powerCheck :: Sched Bool
+    powerCheck = fmap (== 0) (cmd "powerprofilesctl get | grep -vq power-saver")
 
 main :: IO ()
-main = defaultMain reminders
+main = defaultMain schedule
