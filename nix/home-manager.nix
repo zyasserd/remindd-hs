@@ -1,4 +1,4 @@
-{ config, lib, pkgs, mkSched, defaultProgram ? "", ... }:
+{ config, lib, pkgs, mkSched, ... }:
 
 let
   cfg = config.services.remindd;
@@ -22,7 +22,6 @@ in
 
     program = lib.mkOption {
       type = lib.types.lines;
-      default = defaultProgram;
       description = ''
         The schedule, as Haskell source for a module that imports `Lib` and
         provides `main :: IO ()`.  microhs compiles it into the `remindd`
@@ -33,7 +32,7 @@ in
 
         schedule :: Schedule ()
         schedule =
-          remind "water" (45 * minutes) $
+          remind "water" (45 * minute) $
             notify "Water" "Drink something" []
 
         main :: IO ()

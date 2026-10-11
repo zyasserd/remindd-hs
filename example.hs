@@ -1,9 +1,8 @@
--- | My schedule, for the systemd user timer installed by the sched Home
--- Manager module.  Build a standalone binary with:
+-- | An example schedule: what to put in @services.remindd.program@.  It is
+-- just documentation for this repository; nothing in Nix reads it.
 --
--- > mhs a.hs -o sched
---
--- then run @sched check@ from a timer, or @sched list@ by hand.
+-- To try it standalone: @mhs example.hs -o remindd@ (or @ghc@), then run
+-- @remindd check@ from a timer or @remindd list@ by hand.
 
 import Lib
 
@@ -34,32 +33,32 @@ schedule = do
 
   -- interval every 3 weeks, keyed off flake.lock's mtime: nags once a day
   -- while the lock is stale.  (remindd: lastDoneOverride, snooze 86400)
-  remind "osUpdate" days $ do
-    provided (overdueFor (3 * weeks) "stat -c %Y /etc/nixos/flake.lock")
+  remind "osUpdate" day $ do
+    provided (overdueFor (3 * week) "stat -c %Y /etc/nixos/flake.lock")
     notify "Update NixOS" "flake.lock is over 3 weeks old"
       [ button "update" "Update" (shell "code /etc/nixos")
-      , button "snooze" "Snooze" (snooze days) ]
+      , button "snooze" "Snooze" (snooze day) ]
 
   -- condition every 10 min, fires after 3 in a row (30 min); snooze 2h.
-  remind "powerSaver" (10 * minutes) $ do
+  remind "powerSaver" (10 * minute) $ do
     provided (sustained 3 powerSaverOff)
     notify "Activate Power Saver Mode" "Power saver has been off for 30m"
       [ button "activate" "Activate" (shell "powerprofilesctl set power-saver")
-      , button "snooze" "Snooze 2h" (snooze (2 * hours)) ]
+      , button "snooze" "Snooze 2h" (snooze (2 * hour)) ]
 
   -- interval every 3 weeks.
-  remind "backupSSD" (3 * weeks) $
+  remind "backupSSD" (3 * week) $
     notify "SSD Backup" "Time to back up the SSD"
       [ button "done" "Mark Done & Open Kopia"
           (shell "xdg-open 'http://kopia.local'")
-      , button "snooze" "Snooze" (snooze days) ]
+      , button "snooze" "Snooze" (snooze day) ]
 
   -- interval every week.
-  remind "backupFF" weeks $
+  remind "backupFF" week $
     notify "FolderFort Backup" "Time for a FolderFort backup"
       [ button "done" "Mark Done & Open Kopia"
           (shell "xdg-open 'http://kopia.local'")
-      , button "snooze" "Snooze" (snooze days) ]
+      , button "snooze" "Snooze" (snooze day) ]
 
 main :: IO ()
 main = defaultMain schedule

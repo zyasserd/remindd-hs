@@ -4,7 +4,7 @@ A tiny, stateless desktop reminder scheduler, written in Haskell for
 microhs.  A reminder is a **period**, some **guards** and some **effects**:
 
 ```haskell
-remind "battery" (5 * minutes) $ do
+remind "battery" (5 * minute) $ do
   provided (sustained 3 lowBattery)      -- WHEN
   notify "Battery" "Plug in" []          -- WHAT
 ```
@@ -26,7 +26,17 @@ imports = [ inputs.remindd-hs.homeManagerModules.remindd ];
 
 services.remindd = {
   enable = true;
-  program = builtins.readFile ./a.hs;   # or an inline Haskell string
+  program = ''
+    import Lib
+
+    schedule :: Schedule ()
+    schedule =
+      remind "water" (45 * minute) $
+        notify "Water" "Drink something" []
+
+    main :: IO ()
+    main = defaultMain schedule
+  '';
 };
 ```
 
@@ -39,8 +49,8 @@ behaves like remindd's derived interval.
 ## Build a standalone binary
 
 ```
-mhs a.hs -o remindd      # microhs (needs a C compiler)
-ghc a.hs -o remindd      # GHC (Lib.hs alongside; e.g. `nix-shell -p ghc`)
+mhs example.hs -o remindd      # microhs (needs a C compiler)
+ghc example.hs -o remindd      # GHC (Lib.hs alongside; e.g. `nix-shell -p ghc`)
 ```
 
 `Lib.hs` is a single source for both compilers: it avoids microhs-only
@@ -63,7 +73,7 @@ with GHC.
 `schedule :: Schedule ()` is one `do` block:
 
 - `remind name period cfg` declares a reminder, evaluated at most once per
-  `period` seconds (units: `seconds`, `minutes`, `hours`, `days`, `weeks`).
+  `period` seconds (units: `second`, `minute`, `hour`, `day`, `week`).
 - `provided (Act Bool)` gates it — guards run in order, the first false one
   stops it.  `sustained n test` is true only after `n` true readings in a row.
 - `onFire (Act ())` adds a side effect.
@@ -101,5 +111,5 @@ reminder is next due.
 
 - Give every `var` definition a type signature.
 - `Prelude` does not re-export `fromMaybe`/`readMaybe`; import them explicitly.
-- `mhs a.hs -o remindd` needs a C compiler; the interpreter (`mhs -r a.hs -- …`)
+- `mhs example.hs -o remindd` needs a C compiler; the interpreter (`mhs -r example.hs -- …`)
   does not.

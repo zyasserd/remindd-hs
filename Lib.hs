@@ -10,7 +10,7 @@ module Lib
   , Act, io, now, callback, shell, succeeds, readIntCmd
   , snooze, sustained
     -- * Time units
-  , seconds, minutes, hours, days, weeks
+  , second, minute, hour, day, week
     -- * Extension: desktop notifications
   , Button, button, notify
     -- * Running
@@ -201,12 +201,12 @@ onFire a = tell (\r -> r { rFire = rFire r >> a })
 handler :: String -> Act () -> Config ()
 handler n a = tell (\r -> r { rHandlers = upsert n a (rHandlers r) })
 
-seconds, minutes, hours, days, weeks :: Int
-seconds = 1
-minutes = 60 * seconds
-hours   = 60 * minutes
-days    = 24 * hours
-weeks   = 7 * days
+second, minute, hour, day, week :: Int
+second = 1
+minute = 60 * second
+hour   = 60 * minute
+day    = 24 * hour
+week   = 7 * day
 
 
 --------------------------------------------------------------------------------
