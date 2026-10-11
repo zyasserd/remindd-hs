@@ -71,6 +71,10 @@ in
         Type = "oneshot";
         ExecStart = "${cfg.package}/bin/remindd check";
         Environment = [ "SCHED_PROG=${cfg.package}/bin/remindd" ];
+        # `check` backgrounds a `notify-send --wait` pipeline and exits; the
+        # default KillMode=control-group would tear that down with the service,
+        # so keep only the main process in scope.
+        KillMode = "process";
       };
     };
 

@@ -18,6 +18,7 @@ module Lib
   ) where
 
 import Control.Monad (foldM)
+import Control.Exception (finally)
 import System.Process (system)
 import System.Exit (ExitCode(..), die)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirectory, removeFile)
@@ -292,10 +293,13 @@ list dir rs = do
 -- | The timer period: the shortest reminder period.  A reminder runs at the
 -- first tick at or after it is due, so ticking here never misses one; the
 -- only cost is that a period which is not a multiple of it fires slightly
--- late.  (Prints @none@ if there are no reminders.)
+-- late.  There is no sensible timer for an empty schedule, so that is an
+-- error (which surfaces as a build failure when Nix derives the period).
 -- TODO: might not be the best idea to use minimum, but gcd is not efficient either
 interval :: [Reminder] -> IO ()
-interval rs = putStrLn (case map rEvery rs of [] -> "none"; ps -> show (minimum ps))
+interval rs = case map rEvery rs of
+  [] -> die "remindd: the schedule defines no reminders"
+  ps -> print (minimum ps)
 
 
 --------------------------------------------------------------------------------
@@ -357,15 +361,19 @@ shq s = "'" ++ concatMap esc s ++ "'"
     esc c = [c]
 
 -- | Mutual exclusion via @mkdir@ (atomic); a lock older than 30s is stale.
+-- The lock is always released, even if @act@ throws, so a crash does not
+-- leave the next run waiting for the staleness timeout.
 withLock :: FilePath -> IO () -> IO ()
 withLock dir act = do
   createDirectoryIfMissing True dir
   ok <- acquire lock
-  if not ok then die "remindd: another instance holds the lock" else do
-    act
-    _ <- system ("rm -rf " ++ shq lock)
-    return ()
-  where lock = dir ++ "/.lock"
+  if not ok then die "remindd: another instance holds the lock"
+            else act `finally` release
+  where
+    lock = dir ++ "/.lock"
+    release = do
+      _ <- system ("rm -rf " ++ shq lock)
+      return ()
 
 acquire :: FilePath -> IO Bool
 acquire lock = do
