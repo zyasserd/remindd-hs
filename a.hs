@@ -1,28 +1,29 @@
--- | Example schedule.  Build with: mhs -i. Example.hs -o sched
--- then run @sched check@ from cron or a systemd timer.
+-- | My schedule, for the systemd user timer installed by the sched Home
+-- Manager module.  Build a standalone binary with:
+--
+-- > mhs a.hs -o sched
+--
+-- then run @sched check@ from a timer, or @sched list@ by hand.
 
 import Lib
 
 --------------------------------------------------------------------------------
--- Your own typed state: any Show/Read type, declared once as a value.
+-- Guards and actions: ordinary values in 'Act'.
 --------------------------------------------------------------------------------
 
-walks :: Var Int
-walks = var "walks" 0
+-- | True when the file named by @cmd@ was last modified more than @period@
+-- seconds ago.  This is remindd's @lastDoneOverride@, typed by hand: the
+-- interval is measured from an external clock (a file's mtime) rather than
+-- from the last time this reminder fired.
+overdueFor :: Int -> String -> Act Bool
+overdueFor period cmd = do
+  t <- now
+  m <- readIntCmd cmd
+  return (t - (case m of Just x -> x; Nothing -> 0) > period)
 
---------------------------------------------------------------------------------
--- Your own guards and actions: ordinary values in 'Act'.
---------------------------------------------------------------------------------
-
-lowBattery :: Act Bool
-lowBattery = do
-  pct <- readIntCmd "cat /sys/class/power_supply/BAT0/capacity"
-  return (maybe False (< 20) pct)
-
-workHours :: Act Bool
-workHours = do
-  h <- readIntCmd "date +%-H"
-  return (maybe False (\x -> x >= 9 && x < 18) h)
+-- | True while the system is /not/ on power-saver.
+powerSaverOff :: Act Bool
+powerSaverOff = succeeds "powerprofilesctl get | grep -vq power-saver"
 
 --------------------------------------------------------------------------------
 -- The schedule
@@ -31,28 +32,34 @@ workHours = do
 schedule :: Schedule ()
 schedule = do
 
-  -- Simplest: periodic notification with a snooze button.
-  remind "stretch" (2 * hours) $
-    notify "Stretch" "Time to move"
-      [ button "snooze" "Snooze 1h" (snooze hours) ]
+  -- interval every 3 weeks, keyed off flake.lock's mtime: nags once a day
+  -- while the lock is stale.  (remindd: lastDoneOverride, snooze 86400)
+  remind "osUpdate" days $ do
+    provided (overdueFor (3 * weeks) "stat -c %Y /etc/nixos/flake.lock")
+    notify "Update NixOS" "flake.lock is over 3 weeks old"
+      [ button "update" "Update" (shell "code /etc/nixos")
+      , button "snooze" "Snooze" (snooze days) ]
 
-  -- Guard on a condition about the world.
-  remind "water" (45 * minutes) $ do
-    provided workHours
-    notify "Water" "Drink something" []
+  -- condition every 10 min, fires after 3 in a row (30 min); snooze 2h.
+  remind "powerSaver" (10 * minutes) $ do
+    provided (sustained 3 powerSaverOff)
+    notify "Activate Power Saver Mode" "Power saver has been off for 30m"
+      [ button "activate" "Activate" (shell "powerprofilesctl set power-saver")
+      , button "snooze" "Snooze 2h" (snooze (2 * hours)) ]
 
-  -- Debounced: only fires after 3 low readings in a row (15 minutes).
-  remind "battery" (5 * minutes) $ do
-    provided (sustained 3 lowBattery)
-    notify "Battery" "Under 20% - plug in"
-      [ button "later" "Remind in 30m" (snooze (30 * minutes)) ]
-    onFire (shell "logger 'battery low'")
+  -- interval every 3 weeks.
+  remind "backupSSD" (3 * weeks) $
+    notify "SSD Backup" "Time to back up the SSD"
+      [ button "done" "Mark Done & Open Kopia"
+          (shell "xdg-open 'http://kopia.local'")
+      , button "snooze" "Snooze" (snooze days) ]
 
-  -- Typed state in a guard and an effect: nags at most 3 times.
-  remind "walk" hours $ do
-    provided (fmap (< 3) (get walks))
-    notify "Walk" "Take a short walk" []
-    onFire (modify walks (+ 1))
+  -- interval every week.
+  remind "backupFF" weeks $
+    notify "FolderFort Backup" "Time for a FolderFort backup"
+      [ button "done" "Mark Done & Open Kopia"
+          (shell "xdg-open 'http://kopia.local'")
+      , button "snooze" "Snooze" (snooze days) ]
 
 main :: IO ()
 main = defaultMain schedule

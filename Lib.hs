@@ -1,19 +1,4 @@
--- | Lib: a tiny reminder scheduler.  Written for microhs.
---
--- A reminder is a /period/, some /guards/ and some /effects/:
---
--- > remind "battery" (5 * minutes) $ do
--- >   provided (sustained 3 lowBattery)      -- WHEN
--- >   notify "Battery" "Plug in" []          -- WHAT
---
--- Run @prog check@ from an external timer, ticking every @prog interval@
--- seconds.  Also: @list@, @run <name>@ (fire now) and @run <name> <handler>@
--- (what notification buttons call).
---
--- The file has two layers.  The CORE (sections 1-6) is a scheduler that knows
--- nothing about desktop notifications; it exposes two hooks, 'onFire' and
--- 'handler'.  The NOTIFY extension (section 7) is built on only those, and
--- is the pattern to follow for your own (sound, webhook, ...).
+-- | Lib: the scheduler core.  See README.md.
 --
 -- microhs: give every 'var' definition a type signature.
 module Lib
@@ -437,15 +422,17 @@ defaultMain :: Schedule a -> IO ()
 defaultMain sched = do
   args <- getArgs
   prog <- fmap (fromMaybe "sched") (lookupEnv "SCHED_PROG")
-  dir <- stateDir
   let rs = collect sched
   case args of
-    ["check"] -> check dir prog rs
-    ["list"] -> list dir rs
     ["interval"] -> interval rs
-    ["run", name] -> runCmd dir prog rs name Nothing
-    ["run", name, h] -> runCmd dir prog rs name (Just h)
-    _ -> die "usage: sched check | list | interval | run <name> [<handler>]"
+    _ -> do
+      dir <- stateDir
+      case args of
+        ["check"] -> check dir prog rs
+        ["list"] -> list dir rs
+        ["run", name] -> runCmd dir prog rs name Nothing
+        ["run", name, h] -> runCmd dir prog rs name (Just h)
+        _ -> die "usage: sched check | list | interval | run <name> [<handler>]"
 
 -- | The state directory: @$XDG_STATE_HOME/sched@, or @~/.local/state/sched@
 -- when that is unset.  The store is the file @<dir>/state@.
