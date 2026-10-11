@@ -18,11 +18,11 @@ module Lib
   ) where
 
 import Control.Monad (foldM)
-import System.Process (system, readProcess)
+import System.Process (system)
 import System.Exit (ExitCode(..), die)
-import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirectory)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirectory, removeFile)
 import System.Environment (lookupEnv, getArgs)
-import System.IO.TimeMilli (getTimeMilli)
+import System.IO (openTempFile, hClose)
 import Data.Maybe (fromMaybe)
 import Text.Read (readMaybe)
 
@@ -150,7 +150,7 @@ succeeds c = io (fmap (== ExitSuccess) (system c))
 
 -- | Run a shell command and parse its stdout as an integer.
 readIntCmd :: String -> Act (Maybe Int)
-readIntCmd c = io (fmap readMaybe (readProcess ("(" ++ c ++ " || true) 2>/dev/null") [] ""))
+readIntCmd c = io (readInt c)
 
 -- | Silence this reminder for @d@ seconds.
 snooze :: Int -> Act ()
@@ -292,6 +292,7 @@ list dir rs = do
 -- first tick at or after it is due, so ticking here never misses one; the
 -- only cost is that a period which is not a multiple of it fires slightly
 -- late.  (Prints @none@ if there are no reminders.)
+-- TODO: might not be the best idea to use minimum, but gcd is not efficient either
 interval :: [Reminder] -> IO ()
 interval rs = putStrLn (case map rEvery rs of [] -> "none"; ps -> show (minimum ps))
 
@@ -304,7 +305,19 @@ interval rs = putStrLn (case map rEvery rs of [] -> "none"; ps -> show (minimum 
 --------------------------------------------------------------------------------
 
 nowSeconds :: IO Int
-nowSeconds = fmap (`div` 1000) getTimeMilli
+nowSeconds = fmap (fromMaybe 0) (readInt "date +%s")
+
+-- | Run a shell command and read its stdout as an integer.  Goes through a
+-- temp file rather than 'readProcess', because 'readProcess' means different
+-- things under microhs and GHC; 'system' always runs @/bin/sh -c@.
+readInt :: String -> IO (Maybe Int)
+readInt c = do
+  (p, h) <- openTempFile "/tmp" "sched"
+  hClose h
+  _ <- system (c ++ " 2>/dev/null > " ++ shq p)
+  s <- readFile p
+  removeFile p
+  return (readMaybe s)
 
 -- | One line per field: @reminder key value@.  Names and keys have no spaces;
 -- values may (a 'show'n value never contains a raw newline).

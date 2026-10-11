@@ -39,8 +39,14 @@ behaves like remindd's derived interval.
 ## Build a standalone binary
 
 ```
-mhs a.hs -o sched
+mhs a.hs -o sched      # microhs (needs a C compiler)
+ghc a.hs -o sched      # GHC (Lib.hs alongside; e.g. `nix-shell -p ghc`)
 ```
+
+`Lib.hs` is a single source for both compilers: it avoids microhs-only
+modules (`readProcess`, `getTimeMilli`) by shelling out with `system` and a
+temp file.  Under GHC the only non-`base` dependency is `process`, which ships
+with GHC.
 
 ## CLI
 
