@@ -8,10 +8,10 @@
 -- to give it its own state namespace: keys become @\"stretch.lastDone\"@,
 -- but the prefix is handled for you — you only ever write plain keys.
 --
--- microhs has no @Control.Monad.State@, so the monad is defined here.  It
--- also cannot resolve a class constraint on an /inline/ overloaded
--- expression (e.g. @return ()@, a pure @0@); pass a named function or
--- annotate the value.
+-- microhs has no @Control.Monad.State@, but ships a @StateT@ in
+-- @Data.Foldable.Internal@, which we reuse.  microhs also cannot resolve a
+-- class constraint on an /inline/ overloaded expression (e.g. @return ()@, a
+-- pure @0@); pass a named function or annotate the value.
 module Sched
   ( -- * The monad
     Sched
@@ -21,7 +21,7 @@ module Sched
   , liftS
     -- * Shell
   , cmd
-  , parseFirstIntCmd
+  , readIntCmd
     -- * Reminders
   , namespace
   , every
@@ -38,19 +38,20 @@ module Sched
   , runSchedulerIn
   ) where
 
-import System.Process (system)
+import System.Process (system, readProcess)
+import Control.Monad (when, void)
+import Data.Foldable.Internal (StateT(..))
 import System.Exit (ExitCode(..))
 import System.Directory
   ( createDirectoryIfMissing
   , doesFileExist
   , getHomeDirectory
-  , getTemporaryDirectory
-  , removeFile
   )
 import System.Environment (lookupEnv)
 import System.IO.TimeMilli (getTimeMilli)
-import Data.Char (isDigit, digitToInt)
 import Data.List (lookup)
+import Data.Maybe (fromMaybe)
+import Text.Read (readMaybe)
 
 -- | Persistent key/value state.  A fresh key reads as 0.
 type Store = [(String, Int)]
@@ -64,35 +65,15 @@ hr = 60 * 60
 day = 24 * hr
 week = 7 * day
 
--- State monad transformer (microhs has no Control.Monad.State) --------
-
-newtype StateT s m a = StateT { runStateT :: s -> m (a, s) }
-
-instance Monad m => Functor (StateT s m) where
-  fmap f (StateT g) = StateT (\s -> do
-    (a, s') <- g s
-    return (f a, s'))
-
-instance Monad m => Applicative (StateT s m) where
-  pure a = StateT (\s -> return (a, s))
-  StateT f <*> StateT g = StateT (\s -> do
-    (h, s1) <- f s
-    (a, s2) <- g s1
-    return (h a, s2))
-
-instance Monad m => Monad (StateT s m) where
-  return = pure
-  StateT g >>= k = StateT (\s -> do
-    (a, s1) <- g s
-    runStateT (k a) s1)
+-- State monad transformer helper
 
 liftState :: Monad m => m a -> StateT s m a
 liftState m = StateT (\s -> do
   a <- m
-  return (a, s))
+  return (s, a))
 
--- Effect monad: read-only environment (time + key prefix) over IO -----
-
+-- Effect monad: 'Clock' is equiv to @ReaderT Env IO@ — the Reader monad over IO, with
+-- a read-only environment holding the time and the active key prefix.
 data Env = Env { envNow :: Int, envPrefix :: String }
 
 newtype Clock a = Clock { runClock :: Env -> IO a }
@@ -120,7 +101,9 @@ type Sched = StateT Store Clock
 
 -- | Run a program with an explicit time and store.
 runSched :: Int -> Store -> Sched a -> IO (a, Store)
-runSched t store p = runClock (runStateT p store) (Env t "")
+runSched t store p = do
+  (store', a) <- runClock (runStateT p store) (Env t "")
+  return (a, store')
 
 -- | The current time in Unix seconds (fixed for the whole run).
 now :: Sched Int
@@ -138,18 +121,13 @@ prefix = liftState (fmap envPrefix askEnv)
 getS :: String -> Sched Int
 getS k = do
   p <- prefix
-  StateT (\s -> return (getI (p ++ k) s, s))
-  where
-    getI :: String -> Store -> Int
-    getI key st = case lookup key st of
-      Just v -> v
-      Nothing -> 0
+  StateT (\s -> return (s, fromMaybe 0 (lookup (p ++ k) s)))
 
 -- | Write a persistent value (scoped by the enclosing 'namespace').
 setS :: String -> Int -> Sched ()
 setS k v = do
   p <- prefix
-  StateT (\s -> return ((), setI (p ++ k) v s))
+  StateT (\s -> return (setI (p ++ k) v s, ()))
   where
     setI :: String -> Int -> Store -> Store
     setI key val st = (key, val) : filter ((/= key) . fst) st
@@ -162,26 +140,17 @@ cmd c = liftS (fmap exitCode (system c))
     exitCode ExitSuccess = 0
     exitCode (ExitFailure n) = n
 
--- | Run a shell command and parse the first integer in its stdout.  Use this
--- for external last-done sources (e.g. the mtime of a file).
--- TODO: figure out how to simplify
-parseFirstIntCmd :: String -> Sched Int
-parseFirstIntCmd c = liftS (fmap parseFirstInt (capture c))
+-- | Run a shell command and parse its stdout as an integer, or 'Nothing' if
+-- there is none.  Use this for external last-done sources (e.g. the mtime of
+-- a file, which is absent until the file exists).  A failing command yields
+-- 'Nothing' rather than an error.
+readIntCmd :: String -> Sched (Maybe Int)
+readIntCmd c = liftS (fmap readMaybe (capture c))
   where
+    -- @|| true@ so a nonzero exit is not an error ('readProcess' would throw
+    -- otherwise); the parens keep the redirect attached to the whole command.
     capture :: String -> IO String
-    capture c = do
-      tmp <- getTemporaryDirectory
-      t <- getTimeMilli
-      let out = tmp ++ "/sched_capture_" ++ show t ++ ".out"
-      _ <- system ("(" ++ c ++ ") > " ++ out ++ " 2>/dev/null")
-      ex <- doesFileExist out
-      if not ex
-        then return ""
-        else do
-          s <- readFile out
-          s' <- seq (length s) (return s)
-          removeFile out
-          return s'
+    capture cmd = readProcess ("(" ++ cmd ++ " || true) 2>/dev/null") [] ""
 
 -- Reminders ------------------------------------------------------------
 
@@ -199,20 +168,18 @@ every :: Int -> Sched a -> Sched ()
 every secs act = do
   t <- now
   ld <- getS "lastDone"
-  if t > ld + secs
-    then do
-      setS "lastDone" t
-      _ <- act
-      return ()
-    else return ()
+  when (t > ld + secs) $ do
+    setS "lastDone" t
+    void act
 
--- | Like 'every', but the last-done time also comes from an external source.
--- The more recent of the two wins, so the action will not fire early.
-everyWith :: Int -> Sched Int -> Sched a -> Sched ()
+-- | Like 'every', but the last-done time also comes from an external source
+-- ('Nothing' if it is unknown).  The more recent of the two wins, so the
+-- action will not fire early.
+everyWith :: Int -> Sched (Maybe Int) -> Sched a -> Sched ()
 everyWith secs ld act = do
-  l <- ld
+  ml <- ld
   ld' <- getS "lastDone"
-  if l > ld' then setS "lastDone" l else return ()
+  setS "lastDone" (maybe ld' (max ld') ml)
   every secs act
 
 -- | Check at most once per @secs@.  A true result grows a persisted streak,
@@ -225,12 +192,9 @@ condition secs trigger chk act =
     streak <- getS "streak"
     let streak' = if ok then streak + 1 else 0
     setS "streak" streak'
-    if streak' >= trigger
-      then do
-        setS "streak" 0
-        _ <- act
-        return ()
-      else return ()
+    when (streak' >= trigger) $ do
+      setS "streak" 0
+      void act
 
 -- Running --------------------------------------------------------------
 
@@ -281,7 +245,7 @@ parseStore = concatMap parseLine . lines
   where
     parseLine :: String -> Store
     parseLine l = case words l of
-      [k, v] -> [(k, parseFirstInt v)]
+      [k, v] -> [(k, readInt v)]
       _ -> []
 
 writeStore :: FilePath -> Store -> IO ()
@@ -289,9 +253,5 @@ writeStore path st = writeFile path (unlines (map showPair st))
   where
     showPair (k, v) = k ++ " " ++ show v
 
-parseFirstInt :: String -> Int
-parseFirstInt s =
-  case dropWhile (not . isDigit) s of
-    [] -> 0
-    s' -> let (ds, _) = span isDigit s'
-          in foldl (\acc c -> acc * 10 + digitToInt c) 0 ds
+readInt :: String -> Int
+readInt = fromMaybe 0 . readMaybe

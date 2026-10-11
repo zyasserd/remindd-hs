@@ -10,10 +10,10 @@
 --
 -- A reminder is a @Sched ()@ program.  'getS' / 'setS' read and write
 -- persisted state, 'now' is the clock, 'cmd' runs a shell command (returning
--- its exit status, 0 = success), and 'parseFirstIntCmd' captures a command's
--- stdout as a number (for external last-done sources).  'every' and
--- 'condition' are just monadic functions, so a reminder can also be plain
--- @do@ notation.
+-- its exit status, 0 = success), and 'readIntCmd' reads a command's stdout
+-- as a number, or Nothing if there is none (for external last-done
+-- sources).  'every' and 'condition' are just monadic functions, so a
+-- reminder can also be plain @do@ notation.
 --
 -- 'namespace' gives each reminder its own state namespace, so the
 -- @\"count\"@ below and the combinators' @\"lastDone\"@ never clash.
@@ -56,9 +56,10 @@ schedule = do
         return ()
       else setS "count" n'
   where
-    -- External last-done source: the mtime of the flake lock file.
-    flakeTime :: Sched Int
-    flakeTime = parseFirstIntCmd "stat -c %Y /etc/nixos/flake.lock 2>/dev/null || echo 0"
+    -- External last-done source: the mtime of the flake lock file, or
+    -- Nothing while the file does not exist.
+    flakeTime :: Sched (Maybe Int)
+    flakeTime = readIntCmd "stat -c %Y /etc/nixos/flake.lock"
     powerCheck :: Sched Bool
     powerCheck = fmap (== 0) (cmd "powerprofilesctl get | grep -vq power-saver")
 
