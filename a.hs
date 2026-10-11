@@ -1,67 +1,58 @@
--- | Your schedule, written as a Haskell DSL.
---
--- Run it with microhs:
---
---     mhs -r a.hs
---
--- or build a binary (needs a C compiler):
---
---     mhs a.hs -o sched
---
--- A reminder is a @Sched ()@ program.  'getS' / 'setS' read and write
--- persisted state, 'now' is the clock, 'cmd' runs a shell command (returning
--- its exit status, 0 = success), and 'readIntCmd' reads a command's stdout
--- as a number, or Nothing if there is none (for external last-done
--- sources).  'every' and 'condition' are just monadic functions, so a
--- reminder can also be plain @do@ notation.
---
--- 'namespace' gives each reminder its own state namespace, so the
--- @\"count\"@ below and the combinators' @\"lastDone\"@ never clash.
---
--- State lives in @$XDG_STATE_HOME/sched/state@ (fallback
--- @~/.local/state/sched@).
+-- | Example schedule.  Build with: mhs -i. Example.hs -o sched
+-- then run @sched check@ from cron or a systemd timer.
 
-module Main (main) where
+import Lib
 
-import Prelude hiding (min)
-import Sched
+--------------------------------------------------------------------------------
+-- Your own typed state: any Show/Read type, declared once as a value.
+--------------------------------------------------------------------------------
 
-schedule :: Sched ()
+walks :: Var Int
+walks = var "walks" 0
+
+--------------------------------------------------------------------------------
+-- Your own guards and actions: ordinary values in 'Act'.
+--------------------------------------------------------------------------------
+
+lowBattery :: Act Bool
+lowBattery = do
+  pct <- readIntCmd "cat /sys/class/power_supply/BAT0/capacity"
+  return (maybe False (< 20) pct)
+
+workHours :: Act Bool
+workHours = do
+  h <- readIntCmd "date +%-H"
+  return (maybe False (\x -> x >= 9 && x < 18) h)
+
+--------------------------------------------------------------------------------
+-- The schedule
+--------------------------------------------------------------------------------
+
+schedule :: Schedule ()
 schedule = do
-  -- Every 2h, unless the lock file was touched more recently (so it will not
-  -- fire early if the action ran in between).
-  namespace "stretch" $
-    everyWith (2 * hr) flakeTime $
-      cmd "notify-send 'Stretch' 'Time to move'"
 
-  -- Check every 30m; after 12 consecutive trues the action fires.  The
-  -- true-streak is persisted, so it accumulates across runs.
-  namespace "powerSaver" $
-    condition (30 * min) 12 powerCheck $
-      cmd "notify-send 'Power saver' 'Still on power-saver'"
+  -- Simplest: periodic notification with a snooze button.
+  remind "stretch" (2 * hours) $
+    notify "Stretch" "Time to move"
+      [ button "snooze" "Snooze 1h" (snooze hours) ]
 
-  -- Every 24h.
-  namespace "dailyBackup" $
-    every day $
-      cmd "notify-send 'Backup' 'Run your backups'"
+  -- Guard on a condition about the world.
+  remind "water" (45 * minutes) $ do
+    provided workHours
+    notify "Water" "Drink something" []
 
-  -- Custom logic: fire every third time.  Ordinary @do@ notation is enough.
-  namespace "everyThird" $ do
-    n <- getS "count"
-    let n' = n + 1
-    if n' >= 3
-      then do
-        setS "count" 0
-        _ <- cmd "notify-send 'Third' 'Tick'"
-        return ()
-      else setS "count" n'
-  where
-    -- External last-done source: the mtime of the flake lock file, or
-    -- Nothing while the file does not exist.
-    flakeTime :: Sched (Maybe Int)
-    flakeTime = readIntCmd "stat -c %Y /etc/nixos/flake.lock"
-    powerCheck :: Sched Bool
-    powerCheck = fmap (== 0) (cmd "powerprofilesctl get | grep -vq power-saver")
+  -- Debounced: only fires after 3 low readings in a row (15 minutes).
+  remind "battery" (5 * minutes) $ do
+    provided (sustained 3 lowBattery)
+    notify "Battery" "Under 20% - plug in"
+      [ button "later" "Remind in 30m" (snooze (30 * minutes)) ]
+    onFire (shell "logger 'battery low'")
+
+  -- Typed state in a guard and an effect: nags at most 3 times.
+  remind "walk" hours $ do
+    provided (fmap (< 3) (get walks))
+    notify "Walk" "Take a short walk" []
+    onFire (modify walks (+ 1))
 
 main :: IO ()
 main = defaultMain schedule
