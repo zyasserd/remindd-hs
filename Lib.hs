@@ -470,16 +470,27 @@ resetCmd dir rs name = do
   _ <- findReminder rs name
   transact dir $ \_ st -> return (upsert name [] st)
 
--- | One aligned row per reminder.  Times are short durations relative to now;
--- the columns are what a nagging scheduler cares about: @every@ (its period),
--- @state@ (@snoozed@/@due@/@in@ -- about evaluation, since the guard's outcome
--- is unknowable from here), @last done@ ('done') and @last nagged@ (when it
--- last actually notified -- the honest record of firing).
+-- | One aligned row per reminder.  The columns come in two groups, because a
+-- reminder has two clocks.  The /check/ group is the scheduler's side: @every@
+-- (its period), @checked@ (when its guards last ran, 'lastCheck') and @next@
+-- (@snoozed@/@due@/@in@ -- when it will be looked at again, from 'nextEval').
+-- The /act/ group is what has actually happened: @fired@ (when its effects last
+-- ran, 'lastNotifiedAt') and @done@ (when you last acknowledged it).  A guard's
+-- outcome is unknowable from here, so it is not shown; only a @summary@ can
+-- reveal it.  @fired@ and @done@ move independently -- firing does not
+-- acknowledge -- which is exactly what a nagging scheduler is about.
 list :: FilePath -> [Reminder] -> IO ()
 list dir rs = withLockIfFree dir $ do
   st <- readStore (dir ++ "/state")
   t <- nowSeconds
-  mapM_ putStrLn (table (rows t rs st))
+  let ws = rows t rs st
+  if null ws then return ()
+    else mapM_ putStrLn (table (columnGroups (length (head ws))) ws)
+
+-- | The group label over each column, left to right; @""@ is ungrouped.  Sized
+-- to the columns 'rows' emits, with or without the @summary@ column.
+columnGroups :: Int -> [String]
+columnGroups n = take n ["", "check", "check", "check", "act", "act", "note"]
 
 -- | Header plus one row per reminder; empty when there is nothing to show.
 -- Pure, so the presentation can be checked without a clock or a store.  The
@@ -490,7 +501,7 @@ rows t rs st = case rs of
   [] -> []
   _  -> if any hasSummary rs then header : body else map init (header : body)
   where
-    header = ["name", "every", "state", "last done", "last nagged", "summary"]
+    header = ["name", "every", "checked", "next", "fired", "done", "summary"]
     body = map (\r -> row t r (fieldsOf (rName r) st)) rs
     hasSummary r = not (null (rSummary r t (fieldsOf (rName r) st)))
 
@@ -498,13 +509,15 @@ row :: Int -> Reminder -> Fields -> [String]
 row t r fs =
   [ rName r
   , humanizeExact (rEvery r)
+  , ago t (peek lastCheck fs)
   , status t r fs
-  , ago t (peek lastDone fs)
   , ago t (peek lastNotifiedAt fs)
+  , ago t (peek lastDone fs)
   , rSummary r t fs
   ]
 
--- | @snoozed <for>@ / @due@ / @in <time>@ -- about evaluation, not firing.
+-- | @snoozed <for>@ / @due@ / @in <time>@ -- the @next@ column: when the
+-- scheduler will next evaluate the reminder, not whether it will fire.
 status :: Int -> Reminder -> Fields -> String
 status t r fs
   | su > t    = "snoozed " ++ humanize (su - t)
@@ -520,18 +533,42 @@ ago t v
   | t <= v    = "just now"
   | otherwise = humanize (t - v) ++ " ago"
 
--- | Left-align columns, two spaces apart, each wide enough for every row
--- (header included), with a dashed rule under the header; trailing padding is
--- trimmed.  The first row is the header.
-table :: [[String]] -> [String]
-table ws = case ws of
-  []            -> []
-  (header:body) -> line header : rule : map line body
+-- | One row of cells, two spaces apart, each padded to its column width, with
+-- trailing padding trimmed.
+rowLine :: [Int] -> [String] -> String
+rowLine ws = trim . join . zipWith pad ws
   where
-    widths = foldr (zipWith max) (repeat 0) (map (map length) ws)
-    line = trim . join . zipWith pad widths
-    rule = trim . join . map (`replicate` '-') $ widths
     pad w s = s ++ replicate (w - length s) ' '
+    join = foldr1 (\a b -> a ++ "  " ++ b)
+
+-- | The group header: each label centred over the columns it spans, a run of
+-- the same label merged, and ungrouped columns left blank.
+groupLine :: [Int] -> [String] -> String
+groupLine ws gs = trim (go 0 gs)
+  where
+    go _ [] = ""
+    go i (g:rest)
+      | null g = replicate (ws !! i) ' ' ++ "  " ++ go (i + 1) rest
+      | otherwise =
+          let same = takeWhile (== g) (g : rest)
+              j    = i + length same - 1
+              w    = sum (take (length same) (drop i ws)) + 2 * (length same - 1)
+          in centered g w ++ "  " ++ go (j + 1) (drop (length same - 1) rest)
+
+-- | Pad @s@ to width @w@, split as evenly as possible on both sides.
+centered :: String -> Int -> String
+centered s w = let p = max 0 (w - length s)
+               in replicate (p `div` 2) ' ' ++ s ++ replicate (p - p `div` 2) ' '
+
+-- | A table: a centred group row, the header, a dashed rule, then the body.
+-- Columns are two spaces apart, each wide enough for the header and every row;
+-- trailing padding is trimmed.
+table :: [String] -> [[String]] -> [String]
+table _ [] = []
+table gs (header:body) = groupLine ws gs : rowLine ws header : rule : map (rowLine ws) body
+  where
+    ws = foldr (zipWith max) (repeat 0) (map (map length) (header : body))
+    rule = trim (join (map (`replicate` '-') ws))
     join = foldr1 (\a b -> a ++ "  " ++ b)
 
 -- | A duration as @k@ of its largest non-zero units.
