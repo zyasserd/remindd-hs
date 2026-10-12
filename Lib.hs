@@ -160,13 +160,19 @@ callback h =
 -- installs such helpers in @libexec/remindd@ next to @remindd@ (which lives in
 -- @bin@), so we resolve relative to @$REMINDD_PROG@.  This keeps helpers out
 -- of @PATH@: they belong to the program, not the environment.
+--
+-- The program is located with @readlink -f@ first: @command -v@ often yields a
+-- symlink (e.g. a profile's @bin/remindd@), and @bin/..@ from the symlink's
+-- /directory/ is not the install prefix the helper lives under.
 bundled :: FilePath -> Act FilePath
 bundled name = do
   p <- asks envProg
   io $ do
     prog <- if '/' `elem` p then return p
                             else readCmd ("command -v " ++ shq p)
-    return (dirname prog ++ "/../libexec/remindd/" ++ name)
+    real <- readCmd ("readlink -f " ++ shq prog)
+    let bin = if null real then prog else real
+    return (dirname (dirname bin) ++ "/libexec/remindd/" ++ name)
 
 -- | Everything up to (not including) the last @'/'@; @""@ if there is none.
 dirname :: FilePath -> FilePath
