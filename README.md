@@ -95,7 +95,8 @@ with GHC.
   `period` seconds (units: `second`, `minute`, `hour`, `day`, `week`).
 - `provided (Act Bool)` gates it — guards run in order, the first false one
   stops it.  `sustained n test` is true only after `n` true readings in a row;
-  `overdue n` is true until the reminder has been `done` for `n` seconds.
+  `overdue n` is true once `n` seconds have passed since the reminder was last
+  `done` (so a never-done reminder is overdue at once).
 - `onFire (Act ())` adds a side effect.
 - `handler name (Act ())` registers a button action, run by
   `remindd run <name> <handler>`.
@@ -119,9 +120,9 @@ calls `done` (or you `snooze` it).  Firing changes no schedule state — only
 
 ### Effects (`Act a`)
 
-`io`, `now`, `shell`, `succeeds`, `readIntCmd`, `callback`, `logLine`,
-`logCmd`, plus the core state actions.  Ordinary `do` notation; anything `IO`
-lifts with `io`.
+`io`, `now`, `shell`, `succeeds`, `readIntCmd`, `lastModified`, `bundled`,
+`callback`, `logLine`, `logCmd`, plus the core state actions.  Ordinary `do`
+notation; anything `IO` lifts with `io`.
 
 ### Notifications (extension)
 
@@ -189,9 +190,10 @@ software.  At run time it needs:
   `set -C` builtin.  `sync <file>` (store durability) wants coreutils ≥ 8.24;
   older `sync` ignores its arguments and flushes everything, which is still
   correct.
-- **A writable `/tmp`** — capturing a command's output goes through a temporary
-  file there.  It is removed even if the command fails, but a `SIGKILL` at the
-  wrong instant can leave one behind; they are inert and `remindd`-named.
+- **A writable `/tmp`** — capturing a command's output, and `logCmd`'s exit
+  side channel, go through temporary files there.  They are removed even if the
+  command fails, but a `SIGKILL` at the wrong instant can leave one behind;
+  they are inert and `remindd`-named.
 - **`notify-send`** (`libnotify`) with `--action`/`--wait`, plus a desktop entry
   so GNOME groups a reminder's notifications under one **remindd** source.  The
   example's "Open log"/Kopia buttons use `xdg-open`.
