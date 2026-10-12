@@ -174,9 +174,13 @@ bundled name = do
     let bin = if null real then prog else real
     return (dirname (dirname bin) ++ "/libexec/remindd/" ++ name)
 
--- | Everything up to (not including) the last @'/'@; @""@ if there is none.
+-- | Everything up to (not including) the last @'/'@, without a trailing
+-- slash; @""@ if there is none.  (@reverse . dropWhile (/= '/') . reverse@
+-- alone leaves the separator on the end, and then @dirname@ of an
+-- already-slashed path would not shorten it.)
 dirname :: FilePath -> FilePath
-dirname = reverse . dropWhile (/= '/') . reverse
+dirname p = reverse (drop 1 (dropWhile (/= '/') (reverse stripped)))
+  where stripped = reverse (dropWhile (== '/') (reverse p))
 
 -- | Run a shell command, ignoring the result.
 shell :: String -> Act ()
