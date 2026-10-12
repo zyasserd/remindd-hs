@@ -96,7 +96,7 @@ with GHC.
   `overdue n` is true until the reminder has been `done` for `n` seconds.
 - `onFire (Act ())` adds a side effect.
 - `handler name (Act ())` registers a button action, run by
-  `remindd run <name> <name>`.
+  `remindd run <name> <handler>`.
 - `done` marks the reminder done now (clears its snooze and streak); `snooze n`
   skips evaluation for `n` seconds.
 - `var "slot" default :: Var a` declares typed state; `get`/`set`/`modify`

@@ -28,7 +28,11 @@ pkgs.stdenv.mkDerivation {
     for f in ${dir}/*; do
       base=$(basename "$f")
       if [ "$base" != main.hs ] && [ -f "$f" ]; then
-        install -Dm755 "$f" "$out/libexec/remindd/$base"
+        if [ -x "$f" ]; then
+          install -Dm755 "$f" "$out/libexec/remindd/$base"
+        else
+          install -Dm644 "$f" "$out/libexec/remindd/$base"
+        fi
       fi
     done
     runHook postInstall

@@ -34,8 +34,9 @@ in
       description = ''
         Directory holding the schedule.  It must contain `main.hs`: a Haskell
         module that imports `Lib` and provides `main :: IO ()`.  Every other
-        regular file in the directory is installed next to `remindd` as an
-        executable, so the schedule can invoke it by name.
+        regular file in the directory is installed in `libexec/remindd`,
+        private to the program: the schedule reaches it with `Lib.bundled`, so
+        it never appears on `PATH`.  Executable files keep their executable bit.
 
         microhs compiles it into the `remindd` command; a compile error fails
         the build.

@@ -1,4 +1,4 @@
--- | An example schedule: what to put in @services.remindd.program@.  It is
+-- | An example schedule: what to put in @services.remindd.source@.  It is
 -- just documentation for this repository; nothing in Nix reads it.
 --
 -- To try it standalone: @mhs example.hs -o remindd@ (or @ghc@), then run
@@ -20,7 +20,7 @@ overdueFor period cmd = do
   m <- readIntCmd cmd
   return $ case m of
     Nothing -> False
-    Just x  -> t - x > period
+    Just x  -> t - x >= period
 
 -- | True while the system is /not/ on power-saver.
 powerSaverOff :: Act Bool
