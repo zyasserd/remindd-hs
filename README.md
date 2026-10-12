@@ -9,9 +9,10 @@ remind "battery" (5 * minute) $ do
   notify "Battery" "Plug in" []          -- WHAT
 ```
 
-Run `remindd check` from an external timer (cron, systemd); `remindd list` and
-`remindd run <name>` are for by hand.  State lives in
-`$XDG_STATE_HOME/sched/state` (fallback `~/.local/state/sched/state`).
+Run `remindd check` from an external timer (cron, systemd); `remindd list`,
+`remindd run <name>` (acknowledge) and `remindd reset <name>` are for by hand.
+State lives in `$XDG_STATE_HOME/remindd/state` (fallback
+`~/.local/state/remindd/state`).
 
 ## Install (Home Manager)
 
@@ -63,10 +64,11 @@ with GHC.
 | command                     | meaning                                          |
 |-----------------------------|--------------------------------------------------|
 | `remindd check`               | evaluate due reminders; send notifications       |
-| `remindd list`                | per reminder: next, lastDone, snoozedUntil       |
+| `remindd list`                | per reminder: every, state, last done, last nagged |
 | `remindd interval`            | shortest period, in seconds (for a timer)        |
-| `remindd run <name>`          | fire a reminder now                              |
+| `remindd run <name>`          | acknowledge a reminder (mark it done now)        |
 | `remindd run <name> <button>` | run one of its notification buttons              |
+| `remindd reset <name>`        | forget a reminder's state, so it is due again    |
 
 ## Writing a schedule
 
@@ -75,12 +77,20 @@ with GHC.
 - `remind name period cfg` declares a reminder, evaluated at most once per
   `period` seconds (units: `second`, `minute`, `hour`, `day`, `week`).
 - `provided (Act Bool)` gates it — guards run in order, the first false one
-  stops it.  `sustained n test` is true only after `n` true readings in a row.
+  stops it.  `sustained n test` is true only after `n` true readings in a row;
+  `overdue n` is true until the reminder has been `done` for `n` seconds.
 - `onFire (Act ())` adds a side effect.
 - `handler name (Act ())` registers a button action, run by
   `remindd run <name> <name>`.
+- `done` marks the reminder done now (clears its snooze and streak); `snooze n`
+  skips evaluation for `n` seconds.
 - `var "slot" default :: Var a` declares typed state; `get`/`set`/`modify`
   read and write it.  A reminder's state is isolated from every other's.
+
+**Notifying is not doing.**  A reminder is evaluated once per `period`; while
+its guards hold it notifies every time, so it keeps nagging until an action
+calls `done` (or you `snooze` it).  Firing changes no schedule state — only
+`done` (via a button or `remindd run <name>`) does.
 
 ### Effects (`Act a`)
 

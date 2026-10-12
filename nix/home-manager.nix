@@ -9,12 +9,21 @@ let
   # `remindd` and runs `remindd interval` during evaluation (import-from-
   # derivation), the same way remindd derived its timer from the smallest
   # `every`.  Forced only when the module is enabled.
+  #
+  # `remindd` reports errors by exiting 0 (microhs cannot exit nonzero
+  # quietly), so an empty schedule shows up as empty output, which we reject
+  # here rather than installing a timer with a blank interval.
   timerInterval =
-    lib.removeSuffix "\n" (builtins.readFile (
-      pkgs.runCommand "remindd-interval" { } ''
-        ${cfg.package}/bin/remindd interval > $out
-      ''
-    ));
+    let
+      seconds = lib.removeSuffix "\n" (builtins.readFile (
+        pkgs.runCommand "remindd-interval" { } ''
+          ${cfg.package}/bin/remindd interval > $out
+        ''
+      ));
+    in
+    if seconds == ""
+    then throw "services.remindd: the program defines no reminders, so there is no interval"
+    else seconds;
 in
 {
   options.services.remindd = {
@@ -66,11 +75,18 @@ in
     };
 
     systemd.user.services."${checkServiceName}" = {
-      Unit.Description = "remindd: evaluate reminders";
+      Unit = {
+        Description = "remindd: evaluate reminders";
+        # Notifications need the graphical session's DBus; without this an
+        # early check runs with no bus, notify-send fails silently (its output
+        # is discarded), and the reminder is consumed for a whole period.
+        After = [ "graphical-session.target" ];
+        PartOf = [ "graphical-session.target" ];
+      };
       Service = {
         Type = "oneshot";
         ExecStart = "${cfg.package}/bin/remindd check";
-        Environment = [ "SCHED_PROG=${cfg.package}/bin/remindd" ];
+        Environment = [ "REMINDD_PROG=${cfg.package}/bin/remindd" ];
         # `check` backgrounds a `notify-send --wait` pipeline and exits; the
         # default KillMode=control-group would tear that down with the service,
         # so keep only the main process in scope.
@@ -79,14 +95,19 @@ in
     };
 
     systemd.user.timers."${checkServiceName}" = {
-      Unit.Description = "remindd: periodic check";
+      Unit = {
+        Description = "remindd: periodic check";
+        PartOf = [ "graphical-session.target" ];
+      };
       Timer = {
         OnBootSec = "2m";
         OnUnitActiveSec = timerInterval;
         Unit = "${checkServiceName}.service";
         Persistent = true;
       };
-      Install.WantedBy = [ "timers.target" ];
+      # Tie the timer to the session rather than timers.target, so it only
+      # runs while a graphical session (and thus a notification bus) exists.
+      Install.WantedBy = [ "graphical-session.target" ];
     };
   };
 }

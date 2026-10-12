@@ -8,7 +8,7 @@ module Lib
   , Var, var, get, set, modify
     -- * Actions
   , Act, io, now, callback, shell, succeeds, readIntCmd
-  , snooze, sustained
+  , snooze, sustained, overdue, done
     -- * Time units
   , second, minute, hour, day, week
     -- * Extension: desktop notifications
@@ -20,10 +20,10 @@ module Lib
 import Control.Monad (foldM)
 import Control.Exception (finally)
 import System.Process (system)
-import System.Exit (ExitCode(..), die)
+import System.Exit (ExitCode(..), exitSuccess)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirectory, removeFile)
 import System.Environment (lookupEnv, getArgs)
-import System.IO (openTempFile, hClose)
+import System.IO (openTempFile, hClose, hPutStrLn, stderr)
 import Data.Maybe (fromMaybe)
 import Data.Char (isSpace)
 import Text.Read (readMaybe)
@@ -83,11 +83,12 @@ upsert :: Eq k => k -> v -> [(k, v)] -> [(k, v)]
 upsert k v kvs = (k, v) : filter ((/= k) . fst) kvs
 
 -- Slots the core itself uses.
-lastRun, lastDone, snoozedUntil, streak :: Var Int
-lastRun      = var "lastRun" 0       -- when last evaluated
-lastDone     = var "lastDone" 0      -- when last fired
-snoozedUntil = var "snoozedUntil" 0  -- silent until this instant
-streak       = var "streak" 0        -- consecutive successes ('sustained')
+lastCheck, lastDone, snoozedUntil, streak, lastNotifiedAt :: Var Int
+lastCheck      = var "lastCheck" 0       -- when last evaluated
+lastDone       = var "lastDone" 0        -- when the user last acknowledged it
+snoozedUntil   = var "snoozedUntil" 0    -- skip evaluation until this instant
+streak         = var "streak" 0          -- consecutive successes ('sustained')
+lastNotifiedAt = var "lastNotifiedAt" 0  -- when a notification was last sent
 
 
 --------------------------------------------------------------------------------
@@ -154,9 +155,30 @@ succeeds c = io (fmap (== ExitSuccess) (system c))
 readIntCmd :: String -> Act (Maybe Int)
 readIntCmd c = io (readInt c)
 
--- | Silence this reminder for @d@ seconds.
+-- | Silence this reminder for @d@ seconds: evaluation is skipped entirely
+-- until then.
 snooze :: Int -> Act ()
 snooze d = now >>= \t -> set snoozedUntil (t + d)
+
+-- | Mark this reminder done now: clears its snooze and streak and records the
+-- acknowledgement time.  Notifying does /not/ do this (see 'fire'), so a
+-- reminder keeps coming back until an action calls 'done'.
+done :: Act ()
+done = do
+  t <- now
+  set lastDone t
+  set lastCheck t
+  set snoozedUntil 0
+  set streak 0
+
+-- | A guard that holds while the reminder has not been done for @period@
+-- seconds.  A never-done reminder is overdue immediately.  Pair it with a
+-- short evaluation period to nag until 'done'.
+overdue :: Int -> Act Bool
+overdue period = do
+  t <- now
+  d <- get lastDone
+  return (t - d > period)
 
 -- | A guard that holds once @test@ has held @n@ evaluations in a row.
 -- (Uses 'streak', so one per reminder; write your own with another 'Var'.)
@@ -218,26 +240,29 @@ week   = 7 * day
 -- its own slice of the store, save.
 --------------------------------------------------------------------------------
 
--- | The earliest instant a reminder may be evaluated again.
+-- | The earliest instant a reminder may be evaluated again: at most once per
+-- period, and never while snoozed.
 nextEval :: Reminder -> Fields -> Int
 nextEval r fs = max (peek snoozedUntil fs) afterPeriod
   where
-    ran = peek lastRun fs
-    afterPeriod = if ran == 0 then 0 else ran + rEvery r
+    checked = peek lastCheck fs
+    afterPeriod = if checked == 0 then 0 else checked + rEvery r
 
--- | Fire now: run the effect and restart the period.
+-- | Notify now.  Firing does /not/ mark the reminder done -- only 'done' does
+-- -- so, evaluated once per period, a reminder keeps nagging until it is
+-- acknowledged (or snoozed).
 fire :: Reminder -> Act ()
 fire r = do
-  t <- now
   rFire r
-  set lastDone t
-  set lastRun t
+  now >>= set lastNotifiedAt
 
--- | What one scheduled evaluation means.
+-- | What one scheduled evaluation means: run the guards, fire if they hold,
+-- and remember that we looked, so the next look is a period away.
 evaluate :: Reminder -> Act ()
 evaluate r = do
   go <- rGuard r
-  if go then fire r else now >>= set lastRun
+  if go then fire r else return ()
+  now >>= set lastCheck
 
 -- | Every reminder's private fields, by name.
 type Store = [(String, Fields)]
@@ -266,29 +291,113 @@ check dir prog rs = transact dir $ \t st0 -> foldM (tick t) st0 rs
       | nextEval r (fieldsOf (rName r) st) > t = return st
       | otherwise = fmap snd (runOn r t prog (evaluate r) st)
 
--- | @run <name>@ fires the reminder now (skipping its guards);
--- @run <name> <handler>@ runs one of its handlers.
+-- | @run <name>@ acknowledges a reminder (runs 'done'); @run <name> <handler>@
+-- runs one of its notification buttons, which may itself call 'done' or
+-- 'snooze'.
 runCmd :: FilePath -> String -> [Reminder] -> String -> Maybe String -> IO ()
 runCmd dir prog rs name mh =
   case lookup name [(rName r, r) | r <- rs] of
     Nothing -> die ("unknown reminder: " ++ name)
-    Just r -> case maybe (Just (fire r)) (\h -> lookup h (rHandlers r)) mh of
-      Nothing  -> die ("unknown handler: " ++ fromMaybe "" mh)
-      Just act -> transact dir $ \t st -> fmap snd (runOn r t prog act st)
+    Just r -> case mh of
+      Nothing -> transact dir $ \t st -> fmap snd (runOn r t prog done st)
+      Just h  -> case lookup h (rHandlers r) of
+        Nothing  -> die ("unknown handler: " ++ h)
+        Just act -> transact dir $ \t st -> fmap snd (runOn r t prog act st)
 
--- | Per reminder: next evaluation, last fire, snooze.
+-- | Forget a reminder (its last run, snooze and streak), so it is due again
+-- on the next check.  The reminder must exist; this only clears its state.
+resetCmd :: FilePath -> [Reminder] -> String -> IO ()
+resetCmd dir rs name =
+  case lookup name [(rName r, r) | r <- rs] of
+    Nothing -> die ("unknown reminder: " ++ name)
+    Just _  -> transact dir $ \_ st -> return (upsert name [] st)
+
+-- | One aligned row per reminder.  Raw epoch seconds say nothing, so every
+-- time is a short duration relative to now, and the columns are the things a
+-- nagging scheduler actually cares about:
+--
+-- * @every@       -- how often it is evaluated (its period);
+-- * @state@       -- @snoozed <for>@, @due@ (will be looked at on the next
+--                    check), or @in <time>@ until it is;
+-- * @last done@   -- when the user last acknowledged it ('done');
+-- * @last nagged@ -- when it last actually notified (so you can see whether it
+--                    is bugging you right now).
+--
+-- The core cannot know whether the guards will hold, so @state@ is about
+-- evaluation, not firing; @last nagged@ is the honest record of firing.
 list :: FilePath -> [Reminder] -> IO ()
 list dir rs = do
   st <- readStore (dir ++ "/state")
   t <- nowSeconds
-  mapM_ (row st t) rs
+  mapM_ putStrLn (table (rows t rs st))
+
+-- | Header plus one row per reminder; empty when there is nothing to show.
+-- Pure, so the presentation can be checked without a clock or a store.
+rows :: Int -> [Reminder] -> Store -> [[String]]
+rows t rs st = case rs of
+  [] -> []
+  _  -> header : map (\r -> row t r (fieldsOf (rName r) st)) rs
+  where header = ["name", "every", "state", "last done", "last nagged"]
+
+row :: Int -> Reminder -> Fields -> [String]
+row t r fs =
+  [ rName r
+  , humanizeExact (rEvery r)
+  , status t r fs
+  , ago t (peek lastDone fs)
+  , ago t (peek lastNotifiedAt fs)
+  ]
+
+-- | @snoozed <for>@ / @due@ / @in <time>@ -- about evaluation, not firing.
+status :: Int -> Reminder -> Fields -> String
+status t r fs
+  | su > t    = "snoozed " ++ humanize (su - t)
+  | nx <= t   = "due"
+  | otherwise = "in " ++ humanize (nx - t)
+  where su = peek snoozedUntil fs
+        nx = nextEval r fs
+
+-- | A past instant as @<duration> ago@, or @never@ if unset.
+ago :: Int -> Int -> String
+ago t v
+  | v <= 0    = "never"
+  | t <= v    = "just now"
+  | otherwise = humanize (t - v) ++ " ago"
+
+-- | Left-align columns, one space apart, each wide enough for every row
+-- (header included); trailing padding is trimmed.
+table :: [[String]] -> [String]
+table ws = map (trim . unwords . zipWith pad widths) ws
   where
-    row st t r =
-      let fs = fieldsOf (rName r) st
-      in putStrLn (rName r
-           ++ "\tnext " ++ show (max t (nextEval r fs))
-           ++ "\tlastDone " ++ show (peek lastDone fs)
-           ++ "\tsnoozedUntil " ++ show (peek snoozedUntil fs))
+    widths = foldr (zipWith max) (repeat 0) (map (map length) ws)
+    pad w s = s ++ replicate (w - length s) ' '
+
+-- | A duration as @k@ of its largest non-zero units.
+humanizeN :: Int -> Int -> String
+humanizeN k n
+  | n <= 0 = "now"
+  | otherwise = case take k (filter ((> 0) . fst) (unitParts n)) of
+      [] -> "<1s"
+      ps -> unwords [show v ++ u | (v, u) <- ps]
+
+-- | Seconds broken into @(count, unit)@ pairs, largest first.
+unitParts :: Int -> [(Int, String)]
+unitParts n = [ (n `div` week, "w")
+              , (n `div` day `mod` 7, "d")
+              , (n `div` hour `mod` 24, "h")
+              , (n `div` minute `mod` 60, "m")
+              , (n `mod` 60, "s")
+              ]
+
+-- | A duration as its single largest unit: @3d@, @4h@, @45m@, @9s@.  One
+-- significant unit keeps relative times calm (@in 1d@, not @in 23h 59m@).
+humanize :: Int -> String
+humanize = humanizeN 1
+
+-- | A period as its two largest units: @1w@, @1d@, @1h 30m@.  Not rounded,
+-- because it is a fixed config value rather than a time relative to now.
+humanizeExact :: Int -> String
+humanizeExact = humanizeN 2
 
 -- | The timer period: the shortest reminder period.  A reminder runs at the
 -- first tick at or after it is due, so ticking here never misses one; the
@@ -298,7 +407,7 @@ list dir rs = do
 -- TODO: might not be the best idea to use minimum, but gcd is not efficient either
 interval :: [Reminder] -> IO ()
 interval rs = case map rEvery rs of
-  [] -> die "remindd: the schedule defines no reminders"
+  [] -> die "the schedule defines no reminders"
   ps -> print (minimum ps)
 
 
@@ -309,6 +418,14 @@ interval rs = case map rEvery rs of
 -- removeDirectory, so the lock goes through the shell.
 --------------------------------------------------------------------------------
 
+-- | Report an error and stop.  There is deliberately no nonzero status: microhs
+-- exits 1 with an @uncaught exception: ...@ report for any 'ExitCode' but
+-- @ExitSuccess@, and has no @exitImmediately@, so a quiet nonzero exit would
+-- need a foreign import.  A clean @exitSuccess@ (which flushes stderr) keeps
+-- both compilers quiet; 'interval' callers detect the empty output instead.
+die :: String -> IO a
+die msg = hPutStrLn stderr ("remindd: " ++ msg) >> exitSuccess
+
 nowSeconds :: IO Int
 nowSeconds = fmap (fromMaybe 0) (readInt "date +%s")
 
@@ -317,7 +434,7 @@ nowSeconds = fmap (fromMaybe 0) (readInt "date +%s")
 -- microhs and GHC; 'system' always runs @/bin/sh -c@.
 readCmd :: String -> IO String
 readCmd c = do
-  (p, h) <- openTempFile "/tmp" "sched"
+  (p, h) <- openTempFile "/tmp" "remindd"
   hClose h
   _ <- system (c ++ " 2>/dev/null > " ++ shq p)
   s <- readFile p
@@ -367,7 +484,7 @@ withLock :: FilePath -> IO () -> IO ()
 withLock dir act = do
   createDirectoryIfMissing True dir
   ok <- acquire lock
-  if not ok then die "remindd: another instance holds the lock"
+  if not ok then die "another instance holds the lock"
             else act `finally` release
   where
     lock = dir ++ "/.lock"
@@ -451,15 +568,15 @@ pipeline title body bcs =
 -- 8. MAIN
 --------------------------------------------------------------------------------
 
--- | Dispatch @check | list | interval | run <name> [<handler>]@.
--- The program path used in callbacks can be overridden with @SCHED_PROG@;
+-- | Dispatch @check | list | interval | reset <name> | run <name> [<handler>]@.
+-- The program path used in callbacks can be overridden with @REMINDD_PROG@;
 -- otherwise the executable is assumed to be named @remindd@ (what Nix
 -- installs, so it is on @PATH@).
 defaultMain :: Schedule a -> IO ()
-defaultMain sched = do
+defaultMain reminders = do
   args <- getArgs
-  prog <- fmap (fromMaybe "remindd") (lookupEnv "SCHED_PROG")
-  let rs = collect sched
+  prog <- fmap (fromMaybe "remindd") (lookupEnv "REMINDD_PROG")
+  let rs = collect reminders
   case args of
     ["interval"] -> interval rs
     _ -> do
@@ -467,15 +584,20 @@ defaultMain sched = do
       case args of
         ["check"] -> check dir prog rs
         ["list"] -> list dir rs
+        ["reset", name] -> resetCmd dir rs name
         ["run", name] -> runCmd dir prog rs name Nothing
         ["run", name, h] -> runCmd dir prog rs name (Just h)
-        _ -> die "usage: remindd check | list | interval | run <name> [<handler>]"
+        _ -> usage
 
--- | The state directory: @$XDG_STATE_HOME/sched@, or @~/.local/state/sched@
+-- | The command line help, as an error.
+usage :: IO a
+usage = die "usage: remindd check | list | interval | reset <name> | run <name> [<handler>]"
+
+-- | The state directory: @$XDG_STATE_HOME/remindd@, or @~/.local/state/remindd@
 -- when that is unset.  The store is the file @<dir>/state@.
 stateDir :: IO FilePath
 stateDir = do
   mx <- lookupEnv "XDG_STATE_HOME"
   case mx of
-    Just d | not (null d) -> return (d ++ "/sched")
-    _ -> fmap (++ "/.local/state/sched") getHomeDirectory
+    Just d | not (null d) -> return (d ++ "/remindd")
+    _ -> fmap (++ "/.local/state/remindd") getHomeDirectory

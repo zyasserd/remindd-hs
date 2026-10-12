@@ -31,33 +31,39 @@ powerSaverOff = succeeds "powerprofilesctl get | grep -vq power-saver"
 schedule :: Schedule ()
 schedule = do
 
-  -- interval every 3 weeks, keyed off flake.lock's mtime: nags once a day
-  -- while the lock is stale.  (remindd: lastDoneOverride, snooze 86400)
+  -- evaluated daily, so it nags once a day while the lock is stale.  The
+  -- "done" is a fresh flake.lock (an external clock), so there is no done
+  -- button: rebuild and the guard clears itself.
   remind "osUpdate" day $ do
     provided (overdueFor (3 * week) "stat -c %Y /etc/nixos/flake.lock")
     notify "Update NixOS" "flake.lock is over 3 weeks old"
       [ button "update" "Update" (shell "code /etc/nixos")
       , button "snooze" "Snooze" (snooze day) ]
 
-  -- condition every 10 min, fires after 3 in a row (30 min); snooze 2h.
+  -- condition every 10 min, fires after 3 in a row (30 min).  "Activate"
+  -- marks it done and turns power saver on; snooze 2h.
   remind "powerSaver" (10 * minute) $ do
     provided (sustained 3 powerSaverOff)
     notify "Activate Power Saver Mode" "Power saver has been off for 30m"
-      [ button "activate" "Activate" (shell "powerprofilesctl set power-saver")
+      [ button "activate" "Activate"
+          (do done; shell "powerprofilesctl set power-saver")
       , button "snooze" "Snooze 2h" (snooze (2 * hour)) ]
 
-  -- interval every 3 weeks.
-  remind "backupSSD" (3 * week) $
+  -- evaluated daily; overdue once 3 weeks have passed since it was last done,
+  -- so it nags once a day until you mark it done.
+  remind "backupSSD" day $ do
+    provided (overdue (3 * week))
     notify "SSD Backup" "Time to back up the SSD"
       [ button "done" "Mark Done & Open Kopia"
-          (shell "xdg-open 'http://kopia.local'")
+          (do done; shell "xdg-open 'http://kopia.local'")
       , button "snooze" "Snooze" (snooze day) ]
 
-  -- interval every week.
-  remind "backupFF" week $
+  -- same, weekly.
+  remind "backupFF" day $ do
+    provided (overdue week)
     notify "FolderFort Backup" "Time for a FolderFort backup"
       [ button "done" "Mark Done & Open Kopia"
-          (shell "xdg-open 'http://kopia.local'")
+          (do done; shell "xdg-open 'http://kopia.local'")
       , button "snooze" "Snooze" (snooze day) ]
 
 main :: IO ()
