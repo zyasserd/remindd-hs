@@ -94,8 +94,9 @@ calls `done` (or you `snooze` it).  Firing changes no schedule state — only
 
 ### Effects (`Act a`)
 
-`io`, `now`, `shell`, `succeeds`, `readIntCmd`, `callback`, plus the core
-state actions.  Ordinary `do` notation; anything `IO` lifts with `io`.
+`io`, `now`, `shell`, `succeeds`, `readIntCmd`, `callback`, `logLine`,
+`logCmd`, plus the core state actions.  Ordinary `do` notation; anything `IO`
+lifts with `io`.
 
 ### Notifications (extension)
 
@@ -109,13 +110,75 @@ every reminder under a single **remindd** source.  Both parts matter: without
 the desktop entry GNOME keeps one source per pid, and without `--wait` it
 destroys the source the instant `notify-send` exits.
 
+`notifyNow title body [button ...]` sends one immediately from an `onFire` or a
+`handler`, for when whether to notify is only known at run time — e.g. a backup
+that notifies on success or failure (its buttons must be registered with
+`handler` first, since `notifyNow` registers nothing).
+
+### Long jobs and logging
+
+A reminder can do real work — a backup over the network.  It is just ordinary
+`do` and `if`: the command's exit status is a Boolean, and `logCmd` runs it with
+its output appended to the shared log:
+
+```haskell
+runBackup :: Act ()
+runBackup = do
+  ok <- logCmd cmd
+  if ok then do done; notifyNow "Backup done" "Uploaded" []
+        else notifyNow "Backup failed" "Read the log"
+               [ button "retry" "Retry"    runBackup
+               , button "logs"  "Open log" openLog
+               , button "snz"   "Snooze"   (snooze day) ]
+
+remind "backup" day $ do
+  provided (overdue week)
+  handler "retry" runBackup          -- notifyNow registers nothing, so a
+  handler "logs"  openLog            -- button's id must be a handler
+  handler "snz"   (snooze day)
+  onFire runBackup
+```
+
+A job runs inline, so it holds the state lock for as long as it takes.  The lock
+records its holder's pid and process start time, so a second tick **waits**
+rather than starting a second copy, and a lock is stolen only when its holder is
+no longer running -- never because it is simply old, so a backup that runs for
+hours is safe.  `logLine s` appends `TIME [name] s`; `logPath` is that file
+(`<state dir>/log`), one log for every reminder instead of one per reminder.
+
+## Platform assumptions
+
+"Portable" here means **one source for microhs and GHC**, not cross-OS.  The
+program deliberately shells out instead of using FFI, and is Linux/`/bin/sh`
+software.  At run time it needs:
+
+- **`/proc`** — the lock identifies its holder by pid *and* the process's start
+  time, read from `/proc/<pid>/stat`, and checks liveness with `kill -0`.  Both
+  are Linux-only (this is the one place the scheduler is not portable).
+- **A shell and coreutils** — `system` runs `/bin/sh -c`; the commands used are
+  `date`, `cat`, `awk`, `printf`, `mv`, `rm`, `sleep`, `sync`, `kill`, and the
+  `set -C` builtin.  `sync <file>` (store durability) wants coreutils ≥ 8.24;
+  older `sync` ignores its arguments and flushes everything, which is still
+  correct.
+- **A writable `/tmp`** — capturing a command's output goes through a temporary
+  file there.  It is removed even if the command fails, but a `SIGKILL` at the
+  wrong instant can leave one behind; they are inert and `remindd`-named.
+- **`notify-send`** (`libnotify`) with `--action`/`--wait`, plus a desktop entry
+  so GNOME groups a reminder's notifications under one **remindd** source.  The
+  example's "Open log"/Kopia buttons use `xdg-open`.
+- **systemd user services/timers** for the Home Manager module.
+- **XDG paths** — state lives under `$XDG_STATE_HOME` (fallback
+  `~/.local/state/remindd`); `$REMINDD_PROG` overrides the program path used in
+  button callbacks.
+
 ## Design
 
 `Lib.hs` has two layers:
 
-- **Core** (sections 1–6): the scheduler.  It knows nothing about desktop
-  notifications; it only exposes two hooks, `onFire` and `handler`.
-- **Notify extension** (section 7): built on just those hooks — the template
+- **Core** (sections 1–7): the scheduler — the builder, state, actions, the
+  engine, the outside-world basics and the lock.  It knows nothing about
+  desktop notifications; it only exposes two hooks, `onFire` and `handler`.
+- **Notify extension** (section 8): built on just those hooks — the template
   for your own (sound, webhook, …).
 
 A reminder is pure data built by a small writer monad (`Build`); running it

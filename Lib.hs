@@ -9,10 +9,12 @@ module Lib
     -- * Actions
   , Act, io, now, callback, shell, succeeds, readIntCmd
   , snooze, sustained, overdue, done
+    -- * Logging
+  , logLine, logCmd, logPath
     -- * Time units
   , second, minute, hour, day, week
     -- * Extension: desktop notifications
-  , Button, button, notify
+  , Button, button, notify, notifyNow
     -- * Running
   , defaultMain
   ) where
@@ -32,10 +34,9 @@ import Text.Read (readMaybe)
 --------------------------------------------------------------------------------
 -- 1. BUILDER
 --
--- One writer monad builds everything declarative:
---   Schedule = Build Reminder                 (a log of reminders)
---   Config   = Build (Reminder -> Reminder)   (a log of edits to one reminder)
--- Running a block just collects what each statement said; nothing is mutated.
+-- One writer monad builds everything: @Schedule = Build Reminder@ (a log of
+-- reminders) and @Config = Build (Reminder -> Reminder)@ (edits to one).  A
+-- block just collects what its statements said; nothing is mutated.
 --------------------------------------------------------------------------------
 
 newtype Build e a = Build ([e], a)
@@ -126,34 +127,49 @@ instance Monad Act where
 io :: IO a -> Act a
 io m = Act $ \_ s -> m >>= \a -> return (a, s)
 
+-- | Read the environment; read or change the current reminder's state.
+-- ('io', 'asks', 'gets' and 'modifies' are the only ways to build an 'Act'.)
+asks :: (Env -> a) -> Act a
+asks f = Act $ \e s -> return (f e, s)
+
+gets :: (Fields -> a) -> Act a
+gets f = Act $ \_ s -> return (f s, s)
+
+modifies :: (Fields -> Fields) -> Act ()
+modifies f = Act $ \_ s -> return ((), f s)
+
 now :: Act Int
-now = Act $ \e s -> return (envNow e, s)
+now = asks envNow
 
 get :: Read a => Var a -> Act a
-get v = Act $ \_ s -> return (peek v s, s)
+get v = gets (peek v)
 
 set :: Show a => Var a -> a -> Act ()
-set v a = Act $ \_ s -> return ((), poke v a s)
+set v a = modifies (poke v a)
 
 modify :: (Read a, Show a) => Var a -> (a -> a) -> Act ()
 modify v f = get v >>= set v . f
 
 -- | The shell command that runs this reminder's handler (see 'handler').
 callback :: String -> Act String
-callback h = Act $ \e s ->
-  return (unwords (map shq [envProg e, "run", envName e, h]), s)
+callback h =
+  asks (\e -> unwords (map shq [envProg e, "run", envName e, h]))
 
 -- | Run a shell command, ignoring the result.
 shell :: String -> Act ()
 shell c = io (system c >> return ())
 
 -- | Run a shell command; true if it exits successfully.
+success :: String -> IO Bool
+success c = fmap (== ExitSuccess) (system c)
+
+-- | 'success' as an 'Act'.
 succeeds :: String -> Act Bool
-succeeds c = io (fmap (== ExitSuccess) (system c))
+succeeds = io . success
 
 -- | Run a shell command and parse its stdout as an integer.
 readIntCmd :: String -> Act (Maybe Int)
-readIntCmd c = io (readInt c)
+readIntCmd = io . readInt
 
 -- | Silence this reminder for @d@ seconds: evaluation is skipped entirely
 -- until then.
@@ -188,6 +204,40 @@ sustained n test = do
   c <- fmap (\k -> if ok then k + 1 else 0) (get streak)
   if c >= n then set streak 0 >> return True
             else set streak c >> return False
+
+
+--------------------------------------------------------------------------------
+-- 3b. LOGGING
+--
+-- One shared file for every reminder.  'logLine' writes a message; 'logCmd'
+-- runs a command and appends its output.  Both are tagged with the reminder's
+-- name, so a single file tells you who did what.
+--------------------------------------------------------------------------------
+
+-- | Append a timestamped, name-tagged line to a log file.
+logAt :: Env -> FilePath -> String -> IO ()
+logAt e p msg = do
+  t <- readCmd "date '+%Y-%m-%d %H:%M:%S'"
+  _ <- system ("printf '%s\\n' "
+               ++ shq (t ++ " [" ++ envName e ++ "] " ++ msg)
+               ++ " >> " ++ shq p)
+  return ()
+
+-- | Run a shell command, appending its output to the shared log; true if it
+-- exited successfully.  This is 'succeeds' plus a record of the output.
+logCmd :: String -> Act Bool
+logCmd cmd = Act $ \e s -> do
+  p <- logPath
+  logAt e p ("run " ++ cmd)
+  ok <- success (cmd ++ " >> " ++ shq p ++ " 2>&1")
+  return (ok, s)
+
+-- | Append one line to the shared log, tagged with this reminder's name.
+logLine :: String -> Act ()
+logLine msg = Act $ \e s -> do
+  p <- logPath
+  logAt e p msg
+  return ((), s)
 
 
 --------------------------------------------------------------------------------
@@ -281,7 +331,7 @@ transact :: FilePath -> (Int -> Store -> IO Store) -> IO ()
 transact dir f = withLock dir $ do
   st <- readStore (dir ++ "/state")
   t <- nowSeconds
-  f t st >>= writeStore (dir ++ "/state")
+  f t st >>= writeStore dir
 
 -- | One timer tick: evaluate every reminder that is due.
 check :: FilePath -> String -> [Reminder] -> IO ()
@@ -291,42 +341,36 @@ check dir prog rs = transact dir $ \t st0 -> foldM (tick t) st0 rs
       | nextEval r (fieldsOf (rName r) st) > t = return st
       | otherwise = fmap snd (runOn r t prog (evaluate r) st)
 
+-- | Find a reminder by name, or stop.
+findReminder :: [Reminder] -> String -> IO Reminder
+findReminder rs name =
+  maybe (die ("unknown reminder: " ++ name)) return (lookup name [(rName r, r) | r <- rs])
+
 -- | @run <name>@ acknowledges a reminder (runs 'done'); @run <name> <handler>@
 -- runs one of its notification buttons, which may itself call 'done' or
 -- 'snooze'.
 runCmd :: FilePath -> String -> [Reminder] -> String -> Maybe String -> IO ()
-runCmd dir prog rs name mh =
-  case lookup name [(rName r, r) | r <- rs] of
-    Nothing -> die ("unknown reminder: " ++ name)
-    Just r -> case mh of
-      Nothing -> transact dir $ \t st -> fmap snd (runOn r t prog done st)
-      Just h  -> case lookup h (rHandlers r) of
-        Nothing  -> die ("unknown handler: " ++ h)
-        Just act -> transact dir $ \t st -> fmap snd (runOn r t prog act st)
+runCmd dir prog rs name mh = do
+  r <- findReminder rs name
+  act <- case mh of
+    Nothing -> return done
+    Just h  -> maybe (die ("unknown handler: " ++ h)) return (lookup h (rHandlers r))
+  transact dir $ \t st -> fmap snd (runOn r t prog act st)
 
--- | Forget a reminder (its last run, snooze and streak), so it is due again
--- on the next check.  The reminder must exist; this only clears its state.
+-- | Forget a reminder's state (its last run, snooze and streak), so it is due
+-- again on the next check.
 resetCmd :: FilePath -> [Reminder] -> String -> IO ()
-resetCmd dir rs name =
-  case lookup name [(rName r, r) | r <- rs] of
-    Nothing -> die ("unknown reminder: " ++ name)
-    Just _  -> transact dir $ \_ st -> return (upsert name [] st)
+resetCmd dir rs name = do
+  _ <- findReminder rs name
+  transact dir $ \_ st -> return (upsert name [] st)
 
--- | One aligned row per reminder.  Raw epoch seconds say nothing, so every
--- time is a short duration relative to now, and the columns are the things a
--- nagging scheduler actually cares about:
---
--- * @every@       -- how often it is evaluated (its period);
--- * @state@       -- @snoozed <for>@, @due@ (will be looked at on the next
---                    check), or @in <time>@ until it is;
--- * @last done@   -- when the user last acknowledged it ('done');
--- * @last nagged@ -- when it last actually notified (so you can see whether it
---                    is bugging you right now).
---
--- The core cannot know whether the guards will hold, so @state@ is about
--- evaluation, not firing; @last nagged@ is the honest record of firing.
+-- | One aligned row per reminder.  Times are short durations relative to now;
+-- the columns are what a nagging scheduler cares about: @every@ (its period),
+-- @state@ (@snoozed@/@due@/@in@ -- about evaluation, since the guard's outcome
+-- is unknowable from here), @last done@ ('done') and @last nagged@ (when it
+-- last actually notified -- the honest record of firing).
 list :: FilePath -> [Reminder] -> IO ()
-list dir rs = do
+list dir rs = withLockIfFree dir $ do
   st <- readStore (dir ++ "/state")
   t <- nowSeconds
   mapM_ putStrLn (table (rows t rs st))
@@ -400,11 +444,9 @@ humanizeExact :: Int -> String
 humanizeExact = humanizeN 2
 
 -- | The timer period: the shortest reminder period.  A reminder runs at the
--- first tick at or after it is due, so ticking here never misses one; the
--- only cost is that a period which is not a multiple of it fires slightly
--- late.  There is no sensible timer for an empty schedule, so that is an
--- error (which surfaces as a build failure when Nix derives the period).
--- TODO: might not be the best idea to use minimum, but gcd is not efficient either
+-- first tick at or after it is due, so ticking here never misses one (at worst
+-- it fires slightly late).  An empty schedule is an error, which surfaces as a
+-- build failure when Nix derives the period.
 interval :: [Reminder] -> IO ()
 interval rs = case map rEvery rs of
   [] -> die "the schedule defines no reminders"
@@ -412,33 +454,30 @@ interval rs = case map rEvery rs of
 
 
 --------------------------------------------------------------------------------
--- 6. OUTSIDE WORLD: clock, state file, lock, shell quoting
+-- 6. OUTSIDE WORLD: clock, state file, shell quoting
 --
--- All the platform-specific code lives here.  microhs has no flock or
--- removeDirectory, so the lock goes through the shell.
+-- The platform-specific basics everything else is built on: running commands
+-- and reading the clock, the state file, and quoting for the shell.
 --------------------------------------------------------------------------------
 
 -- | Report an error and stop.  There is deliberately no nonzero status: microhs
--- exits 1 with an @uncaught exception: ...@ report for any 'ExitCode' but
--- @ExitSuccess@, and has no @exitImmediately@, so a quiet nonzero exit would
--- need a foreign import.  A clean @exitSuccess@ (which flushes stderr) keeps
--- both compilers quiet; 'interval' callers detect the empty output instead.
+-- cannot exit nonzero quietly, so this stays @exitSuccess@ (flushing stderr);
+-- 'interval' callers detect the empty output instead.
 die :: String -> IO a
 die msg = hPutStrLn stderr ("remindd: " ++ msg) >> exitSuccess
 
 nowSeconds :: IO Int
 nowSeconds = readInt "date +%s" >>= maybe (die "cannot read the clock") return
 
--- | Run a shell command and read its stdout.  Goes through a temp file rather
--- than 'readProcess', because 'readProcess' means different things under
--- microhs and GHC; 'system' always runs @/bin/sh -c@.
+-- | Run a shell command and read its stdout.  A temp file, not 'readProcess'
+-- (which differs between microhs and GHC); 'system' always runs @/bin/sh -c@.
+-- The temp file is removed even if the command or the read throws.
 readCmd :: String -> IO String
 readCmd c = do
   (p, h) <- openTempFile "/tmp" "remindd"
   hClose h
-  _ <- system (c ++ " 2>/dev/null > " ++ shq p)
-  s <- readFile p
-  removeFile p
+  s <- (do _ <- system (c ++ " 2>/dev/null > " ++ shq p)
+           readFile p) `finally` removeFile p
   return (trim s)
 
 trim :: String -> String
@@ -461,14 +500,18 @@ readStore path = do
       _ -> st
     word s = let (a, b) = break (== ' ') s in (a, drop 1 b)
 
--- | Write to a temp file, then @mv@ (an atomic rename) over the real one, so
--- a crash never leaves a half-written store.  Safe under the lock.
+-- | Write the store to a temp file, fsync it, @mv@ (an atomic rename) it over
+-- the real one, and fsync the directory, so a crash leaves either the old store
+-- or the complete new one -- never a half-written one.  Safe under the lock.
 writeStore :: FilePath -> Store -> IO ()
-writeStore path st = do
+writeStore dir st = do
   writeFile tmp (unlines [n ++ " " ++ k ++ " " ++ v | (n, fs) <- st, (k, v) <- fs])
-  _ <- system ("mv " ++ shq tmp ++ " " ++ shq path)
+  _ <- system ("sync " ++ shq tmp
+               ++ " && mv " ++ shq tmp ++ " " ++ shq path
+               ++ " && sync " ++ shq dir)
   return ()
   where tmp = path ++ ".tmp"
+        path = dir ++ "/state"
 
 -- | Single-quote a string for @sh@.
 shq :: String -> String
@@ -477,49 +520,146 @@ shq s = "'" ++ concatMap esc s ++ "'"
     esc '\'' = "'\\''"
     esc c = [c]
 
--- | Mutual exclusion by an atomically-claimed lock file.  @set -C@ (noclobber)
--- makes the shell create and write the file in one @O_EXCL@-guarded step, so
--- the lock never exists without its timestamp; a holder older than 30s is
--- stale and may be stolen.  The lock is always released, even if @act@ throws,
--- so a crash does not leave the next run waiting for the staleness timeout.
+--------------------------------------------------------------------------------
+-- 7. LOCK
+--
+-- Mutual exclusion by an atomically-claimed lock file holding its holder's
+-- identity.  Pid alone is not an identity -- pids are reused -- but pid with
+-- the process's start time is, so a lock is stale iff its holder is gone: a
+-- backup killed mid-run is reclaimed at once, a live holder (however long) is
+-- never stolen, and no age limit is needed.
+--
+-- Claiming is @set -C@ (one atomic create-and-write); stealing a stale lock is
+-- an @mv@ (an atomic rename), so exactly one racer wins and no process removes
+-- a lock another just created.
+--------------------------------------------------------------------------------
+
+-- | A lock's holder: a pid and the process's start time (field 22 of
+-- @/proc/<pid>/stat@).  'show' is exactly the lock file's contents and
+-- 'holderOf' its inverse, so the file format lives in one place.
+data Holder = Holder
+  { holderPid   :: Int
+  , holderStart :: Int
+  }
+
+instance Show Holder where
+  show h = show (holderPid h) ++ " " ++ show (holderStart h)
+
+-- | Read a holder back from a lock file's (trimmed) contents.
+holderOf :: String -> Maybe Holder
+holderOf s = case words s of
+  [p, t] -> case (readMaybe p :: Maybe Int, readMaybe t :: Maybe Int) of
+    (Just pid, Just start) -> Just (Holder pid start)
+    _ -> Nothing
+  _ -> Nothing
+
+-- | This process's own id.  Read in-process: through the shell, @/proc/self@
+-- would be the id of the shell or @cat@, not of this program.
+getPid :: IO Int
+getPid = do
+  s <- readFile "/proc/self/stat"
+  return (fromMaybe 0 (readMaybe (takeWhile (/= ' ') s)))
+
+-- | A process's start time (field 22 of @/proc/<pid>/stat@): take the text
+-- after the command field's @)@, then its 20th field.  'Nothing' if it is gone.
+procStart :: Int -> IO (Maybe Int)
+procStart pid = readInt $
+  "awk -F')' '{print $NF}' /proc/" ++ show pid
+    ++ "/stat 2>/dev/null | awk '{print $20}'"
+
+-- | This process's own identity.
+self :: IO Holder
+self = do
+  pid <- getPid
+  start <- fmap (fromMaybe 0) (procStart pid)
+  return (Holder pid start)
+
+-- | Is a recorded holder still running?  Since pids are reused, only a
+-- matching start time counts as alive; if it is unknown, fall back to
+-- @kill -0@.
+holderAlive :: Holder -> IO Bool
+holderAlive h
+  | holderStart h > 0 = do
+      cur <- procStart (holderPid h)
+      maybe fallback (\s -> return (s == holderStart h)) cur
+  | otherwise = fallback
+  where
+    fallback =
+      success ("kill -0 " ++ show (holderPid h) ++ " 2>/dev/null")
+
+-- | The raw contents of a lock file, empty when it is absent.
+readLock :: FilePath -> IO String
+readLock lock = fmap trim (readCmd ("cat " ++ shq lock))
+
+-- | Is the lock held by a live process?  Absent or dead-holder means no; a
+-- present but unparsable file is treated as held, conservatively.
+isHeld :: FilePath -> IO Bool
+isHeld lock = do
+  s <- readLock lock
+  case holderOf s of
+    Just h  -> holderAlive h
+    Nothing -> return (not (null s))
+
+-- | The @O_EXCL@ create-and-write of our identity.
+claim :: FilePath -> Holder -> String
+claim lock me =
+  "set -C; { printf '%s\\n' " ++ shq (show me) ++ " > " ++ shq lock ++ "; } 2>/dev/null"
+
+-- | Atomically create the lock, stealing it (by atomic rename) only if its
+-- holder is gone, so exactly one process takes an abandoned lock.
+acquire :: FilePath -> IO Bool
+acquire lock = do
+  me <- self
+  created <- success (claim lock me)
+  if created then return True else do
+    held <- isHeld lock
+    if held then return False else do
+      moved <- success ("mv " ++ shq lock ++ " " ++ shq side)
+      _ <- system ("rm -rf " ++ shq side)
+      if not moved then return False else success (claim lock me)
+  where side = lock ++ ".old"
+
+-- | @withLock dir act@ runs @act@ with exclusive access.  A held lock is
+-- waited for briefly; the lock is released only while still ours, and always
+-- (even if @act@ throws).
 withLock :: FilePath -> IO () -> IO ()
 withLock dir act = do
   createDirectoryIfMissing True dir
-  ok <- acquire lock
+  ok <- acquireWithin 5
   if not ok then die "another instance holds the lock"
-            else act `finally` release
+            else act `finally` releaseLock (lockFile dir)
   where
-    lock = dir ++ "/.lock"
-    release = do
-      _ <- system ("rm -rf " ++ shq lock)
-      return ()
+    acquireWithin 0 = return False
+    acquireWithin n = acquire (lockFile dir) >>= \ok ->
+      if ok then return True
+            else system "sleep 1" >> acquireWithin (n - 1)
 
-acquire :: FilePath -> IO Bool
-acquire lock = do
-  rc <- system ("set -C; date +%s 2>/dev/null > " ++ shq lock)
-  case rc of
-    ExitSuccess -> return True
-    _ -> do
-      stale <- isStale lock
-      if stale then system ("rm -rf " ++ shq lock) >> acquire lock
-               else return False
+-- | Run a reader under the lock when it is free; if a writer holds it, run
+-- anyway.  Either way the read is safe: the store is replaced by an atomic
+-- rename, so an unlocked reader still sees a complete snapshot, and a manual
+-- @list@ should not be blocked by a long-running job.
+withLockIfFree :: FilePath -> IO a -> IO a
+withLockIfFree dir act = do
+  createDirectoryIfMissing True dir
+  ok <- acquire (lockFile dir)
+  if ok then act `finally` releaseLock (lockFile dir) else act
 
--- | A lock is stale if it is gone (someone else will re-claim it) or its
--- timestamp is over 30s old.  A present but non-numeric file means its holder
--- is between create and write, so it is /not/ stale -- never steal that.
-isStale :: FilePath -> IO Bool
-isStale lock = do
-  ex <- doesFileExist lock
-  if not ex then return True else do
-    s <- readFile lock
-    t <- nowSeconds
-    case readMaybe (trim s) of
-      Just ts -> return (t - ts > 30)
-      Nothing -> return False
+-- | The lock file for a state directory.
+lockFile :: FilePath -> FilePath
+lockFile dir = dir ++ "/.lock"
+
+-- | Remove the lock, but only while it is still ours.
+releaseLock :: FilePath -> IO ()
+releaseLock lock = do
+  me <- self
+  held <- readLock lock
+  if held == show me
+    then do _ <- system ("rm -f " ++ shq lock); return ()
+    else return ()
 
 
 --------------------------------------------------------------------------------
--- 7. EXTENSION: DESKTOP NOTIFICATIONS
+-- 8. EXTENSION: DESKTOP NOTIFICATIONS
 --
 -- Built only on the core's public hooks: 'onFire' sends the notification,
 -- 'handler' registers what each button does, 'callback' yields the shell
@@ -540,21 +680,20 @@ button = Button
 notify :: String -> String -> [Button] -> Config ()
 notify title body bs = do
   mapM_ (\b -> handler (btnId b) (btnAct b)) bs
-  onFire $ do
-    cbs <- mapM (callback . btnId) bs
-    io (system (pipeline title body (zip bs cbs)) >> return ())
+  onFire (notifyNow title body bs)
 
--- | One detached shell pipeline:
---
--- > ( k=$(notify-send --app-name=remindd \
--- >       -h string:desktop-entry:remindd --action=id=Label --wait TITLE BODY)
--- >   case "$k" in 'id') <callback>;; esac ) </dev/null >/dev/null 2>&1 &
---
--- @--wait@ blocks until the notification closes and prints the clicked
--- action; backgrounding keeps that from stalling the timer that called us.
--- The fixed @--app-name@ (and @desktop-entry@) make GNOME group every
--- reminder's notifications under a single @remindd@ app instead of the
--- default @notify-send@.
+-- | Send a notification right now -- the imperative counterpart of 'notify',
+-- for when whether to notify is known only at run time.  It registers nothing,
+-- so every button's id must already be registered with 'handler'.
+notifyNow :: String -> String -> [Button] -> Act ()
+notifyNow title body bs = do
+  cbs <- mapM (callback . btnId) bs
+  io (system (pipeline title body (zip bs cbs)) >> return ())
+
+-- | One detached shell pipeline: @notify-send --wait@ (which prints the
+-- clicked action) run in the background so it does not stall the caller, then
+-- the matching callback.  The fixed @--app-name@/@desktop-entry@ make GNOME
+-- group every notification under one @remindd@ app.
 pipeline :: String -> String -> [(Button, String)] -> String
 pipeline title body bcs =
   "( k=$(notify-send "
@@ -569,7 +708,7 @@ pipeline title body bcs =
 
 
 --------------------------------------------------------------------------------
--- 8. MAIN
+-- 9. MAIN
 --------------------------------------------------------------------------------
 
 -- | Reject a schedule that cannot run: a non-positive period (it would make
@@ -591,9 +730,8 @@ duplicates [] = []
 duplicates (x:xs) = if x `elem` xs then x : duplicates xs else duplicates xs
 
 -- | Dispatch @check | list | interval | reset <name> | run <name> [<handler>]@.
--- The program path used in callbacks can be overridden with @REMINDD_PROG@;
--- otherwise the executable is assumed to be named @remindd@ (what Nix
--- installs, so it is on @PATH@).
+-- Callbacks use @$REMINDD_PROG@, else the executable @remindd@ (what Nix
+-- installs).
 defaultMain :: Schedule a -> IO ()
 defaultMain reminders = do
   args <- getArgs
@@ -624,3 +762,8 @@ stateDir = do
   case mx of
     Just d | not (null d) -> return (d ++ "/remindd")
     _ -> fmap (++ "/.local/state/remindd") getHomeDirectory
+
+-- | The shared log, @<state dir>/log@: every reminder appends here through
+-- 'logLine'/'logCmd', so there is one file to read.
+logPath :: IO FilePath
+logPath = fmap (++ "/log") stateDir
