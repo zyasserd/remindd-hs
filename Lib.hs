@@ -3,9 +3,12 @@
 -- microhs: give every 'var' definition a type signature.
 module Lib
   ( -- * Building a schedule
-    Schedule, Config, remind, provided, onFire, handler
+    Schedule, Config, remind, provided, onFire, handler, summary
     -- * Typed state
   , Var, var, get, set, modify
+  , lastCheck, lastDone, snoozedUntil, streak, lastNotifiedAt
+    -- * Display
+  , View, get', now'
     -- * Actions
   , Act, io, now, callback, shell, succeeds, readIntCmd
   , lastModified, bundled
@@ -91,6 +94,36 @@ lastDone       = var "lastDone" 0        -- when the user last acknowledged it
 snoozedUntil   = var "snoozedUntil" 0    -- skip evaluation until this instant
 streak         = var "streak" 0          -- consecutive successes ('sustained')
 lastNotifiedAt = var "lastNotifiedAt" 0  -- when a notification was last sent
+
+
+--------------------------------------------------------------------------------
+-- 2b. DISPLAY
+--
+-- A pure read of one reminder's state: @View a@ is @Int -> Fields -> a@ (the
+-- instant, then the fields), with no way to run IO or change anything.  It is
+-- what 'summary' is built from, so listing can describe a reminder without the
+-- power to fire it.
+--------------------------------------------------------------------------------
+
+newtype View a = View { runView :: Int -> Fields -> a }
+
+instance Functor View where
+  fmap f (View g) = View $ \t fs -> f (g t fs)
+
+instance Applicative View where
+  pure a = View $ \_ _ -> a
+  View f <*> View g = View $ \t fs -> f t fs (g t fs)
+
+instance Monad View where
+  View g >>= k = View $ \t fs -> runView (k (g t fs)) t fs
+
+-- | Read a typed slot for display.
+get' :: Read a => Var a -> View a
+get' v = View $ \_ fs -> peek v fs
+
+-- | The instant of the evaluation, for display.
+now' :: View Int
+now' = View $ \t _ -> t
 
 
 --------------------------------------------------------------------------------
@@ -262,12 +295,25 @@ logAt e p msg = do
   return ()
 
 -- | Run a shell command, appending its output to the shared log; true if it
--- exited successfully.  This is 'succeeds' plus a record of the output.
+-- exited successfully.  Every line of the command's output is tagged like a
+-- 'logLine' message (with @|@ marking continuation), so even one shared log has
+-- no unattributed lines.  The exit status is captured separately, because the
+-- pipeline that does the tagging ends in @awk@, not in the command.
 logCmd :: String -> Act Bool
 logCmd cmd = Act $ \e s -> do
   p <- logPath
   logAt e p ("run " ++ cmd)
-  ok <- success (cmd ++ " >> " ++ shq p ++ " 2>&1")
+  t <- readCmd "date '+%Y-%m-%d %H:%M:%S'"
+  let pre = t ++ " [" ++ envName e ++ "] | "
+      st  = p ++ ".exit"
+  _ <- system ("rm -f " ++ shq st)
+  _ <- system ( "{ " ++ cmd ++ "; printf '%s' \"$?\" > " ++ shq st ++ "; } 2>&1"
+                ++ " | INFO=" ++ shq pre
+                ++ " awk '{ print ENVIRON[\"INFO\"] $0 }' >> " ++ shq p )
+  code <- readCmd ("cat " ++ shq st)
+  _ <- system ("rm -f " ++ shq st)
+  let ok = code == "0"
+  logAt e p ("exit " ++ if ok then "0" else (if null code then "?" else code))
   return (ok, s)
 
 -- | Append one line to the shared log, tagged with this reminder's name.
@@ -288,6 +334,7 @@ data Reminder = Reminder
   , rGuard    :: Act Bool            -- fires only if this holds
   , rFire     :: Act ()              -- what to do when it fires
   , rHandlers :: [(String, Act ())]  -- named actions for @run <name> <h>@
+  , rSummary  :: Int -> Fields -> String  -- one-line description for @list@
   }
 
 type Schedule a = Build Reminder a
@@ -296,7 +343,7 @@ type Config a = Build (Reminder -> Reminder) a
 -- | Declare a reminder, evaluated every @period@ seconds.
 remind :: String -> Int -> Config () -> Schedule ()
 remind name period cfg = tell (foldl (flip ($)) blank (collect cfg))
-  where blank = Reminder name period (return True) (return ()) []
+  where blank = Reminder name period (return True) (return ()) [] (\_ _ -> "")
 
 -- | Add a guard.  Guards are tried in order; the first false one stops it.
 provided :: Act Bool -> Config ()
@@ -311,6 +358,17 @@ onFire a = tell (\r -> r { rFire = rFire r >> a })
 -- a name is registered twice the later one wins.
 handler :: String -> Act () -> Config ()
 handler n a = tell (\r -> r { rHandlers = upsert n a (rHandlers r) })
+
+-- | Describe this reminder's state in one line, for the @summary@ column of
+-- @remindd list@.  Built from 'get'', 'now'' and the remaining core 'Var's, so
+-- it is pure: displaying a reminder can never notify or change its state.
+--
+-- > remind "powerSaver" (10 * minute) $ do
+-- >   provided (sustained 3 powerSaverOff)
+-- >   summary (do s <- get' streak; return ("streak " ++ show s ++ "/3"))
+summary :: View String -> Config ()
+summary v = tell (\r -> r { rSummary = runView v })
+
 
 second, minute, hour, day, week :: Int
 second = 1
@@ -414,12 +472,17 @@ list dir rs = withLockIfFree dir $ do
   mapM_ putStrLn (table (rows t rs st))
 
 -- | Header plus one row per reminder; empty when there is nothing to show.
--- Pure, so the presentation can be checked without a clock or a store.
+-- Pure, so the presentation can be checked without a clock or a store.  The
+-- @summary@ column is dropped entirely when no reminder defines one, so the
+-- output stays as it was until a 'summary' is added.
 rows :: Int -> [Reminder] -> Store -> [[String]]
 rows t rs st = case rs of
   [] -> []
-  _  -> header : map (\r -> row t r (fieldsOf (rName r) st)) rs
-  where header = ["name", "every", "state", "last done", "last nagged"]
+  _  -> if any hasSummary rs then header : body else map init (header : body)
+  where
+    header = ["name", "every", "state", "last done", "last nagged", "summary"]
+    body = map (\r -> row t r (fieldsOf (rName r) st)) rs
+    hasSummary r = not (null (rSummary r t (fieldsOf (rName r) st)))
 
 row :: Int -> Reminder -> Fields -> [String]
 row t r fs =
@@ -428,6 +491,7 @@ row t r fs =
   , status t r fs
   , ago t (peek lastDone fs)
   , ago t (peek lastNotifiedAt fs)
+  , rSummary r t fs
   ]
 
 -- | @snoozed <for>@ / @due@ / @in <time>@ -- about evaluation, not firing.

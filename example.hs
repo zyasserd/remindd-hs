@@ -43,9 +43,12 @@ schedule = do
       , button "snooze" "Snooze" (snooze day) ]
 
   -- condition every 10 min, fires after 3 in a row (30 min).  "Activate"
-  -- marks it done and turns power saver on; snooze 2h.
+  -- marks it done and turns power saver on; snooze 2h.  The summary turns the
+  -- stored streak into a line for `remindd list`.
   remind "powerSaver" (10 * minute) $ do
     provided (sustained 3 powerSaverOff)
+    summary (do s <- get' streak
+                return ("streak " ++ show s ++ " of 3"))
     notify "Activate Power Saver Mode" "Power saver has been off for 30m"
       [ button "activate" "Activate"
           (do done; shell "powerprofilesctl set power-saver")

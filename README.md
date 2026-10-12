@@ -79,7 +79,7 @@ with GHC.
 | command                     | meaning                                          |
 |-----------------------------|--------------------------------------------------|
 | `remindd check`               | evaluate due reminders; send notifications       |
-| `remindd list`                | per reminder: every, state, last done, last nagged |
+| `remindd list`                | per reminder: every, state, last done, last nagged, summary |
 | `remindd interval`            | shortest period, in seconds (for a timer)        |
 | `remindd run <name>`          | acknowledge a reminder (mark it done now)        |
 | `remindd run <name> <button>` | run one of its notification buttons              |
@@ -101,6 +101,11 @@ with GHC.
   skips evaluation for `n` seconds.
 - `var "slot" default :: Var a` declares typed state; `get`/`set`/`modify`
   read and write it.  A reminder's state is isolated from every other's.
+- `summary (View String)` adds a one-line description to `remindd list`, e.g.
+  `summary (do s <- get' streak; return ("streak " ++ show s ++ " of 3"))`.
+  `View` is a pure read of the reminder's state (`get'`, `now'`, and the core
+  `Var`s `lastDone`, `streak`, …), so listing can never notify or change
+  anything.  The `summary` column only appears once some reminder defines one.
 
 **Notifying is not doing.**  A reminder is evaluated once per `period`; while
 its guards hold it notifies every time, so it keeps nagging until an action
@@ -158,8 +163,12 @@ A job runs inline, so it holds the state lock for as long as it takes.  The lock
 records its holder's pid and process start time, so a second tick **waits**
 rather than starting a second copy, and a lock is stolen only when its holder is
 no longer running -- never because it is simply old, so a backup that runs for
-hours is safe.  `logLine s` appends `TIME [name] s`; `logPath` is that file
-(`<state dir>/log`), one log for every reminder instead of one per reminder.
+hours is safe.  `logLine s` appends `TIME [name] s`; `logCmd cmd` brackets the
+command with `run`/`exit` lines and prefixes **every** output line as
+`TIME [name] | …`, so one shared log never has an unattributed line (the exit
+status is captured separately, since the tagging pipeline ends in `awk`).
+`logPath` is that file (`<state dir>/log`), one log for every reminder instead
+of one per reminder.
 
 ## Platform assumptions
 
