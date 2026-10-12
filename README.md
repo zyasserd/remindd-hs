@@ -96,7 +96,7 @@ acknowledged).  Firing does not acknowledge, so the two move independently: a
 reminder can fire many times without ever being done — that is what nagging
 means — and `done` can happen before it ever fires.  A guard's outcome is never
 stored, so it is not shown; only a `summary` can reveal it.  The `summary`
-column (and its **note** heading) appears only once some reminder defines one.
+column appears only once some reminder defines one.
 
 ## Writing a schedule
 

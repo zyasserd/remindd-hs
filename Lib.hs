@@ -487,10 +487,11 @@ list dir rs = withLockIfFree dir $ do
   if null ws then return ()
     else mapM_ putStrLn (table (columnGroups (length (head ws))) ws)
 
--- | The group label over each column, left to right; @""@ is ungrouped.  Sized
--- to the columns 'rows' emits, with or without the @summary@ column.
+-- | The group label over each column, left to right; @""@ is ungrouped (the
+-- @name@ and @summary@ columns carry no heading).  Sized to the columns 'rows'
+-- emits, with or without the @summary@ column.
 columnGroups :: Int -> [String]
-columnGroups n = take n ["", "check", "check", "check", "act", "act", "note"]
+columnGroups n = take n (["", "check", "check", "check", "act", "act"] ++ repeat "")
 
 -- | Header plus one row per reminder; empty when there is nothing to show.
 -- Pure, so the presentation can be checked without a clock or a store.  The
@@ -541,8 +542,8 @@ rowLine ws = trim . join . zipWith pad ws
     pad w s = s ++ replicate (w - length s) ' '
     join = foldr1 (\a b -> a ++ "  " ++ b)
 
--- | The group header: each label centred over the columns it spans, a run of
--- the same label merged, and ungrouped columns left blank.
+-- | The group header: each label boxed over the columns it spans, a run of the
+-- same label merged, and ungrouped columns left blank.
 groupLine :: [Int] -> [String] -> String
 groupLine ws gs = trim (go 0 gs)
   where
@@ -553,14 +554,18 @@ groupLine ws gs = trim (go 0 gs)
           let same = takeWhile (== g) (g : rest)
               j    = i + length same - 1
               w    = sum (take (length same) (drop i ws)) + 2 * (length same - 1)
-          in centered g w ++ "  " ++ go (j + 1) (drop (length same - 1) rest)
+          in bracket g w ++ "  " ++ go (j + 1) (drop (length same - 1) rest)
 
--- | Pad @s@ to width @w@, split as evenly as possible on both sides.
-centered :: String -> Int -> String
-centered s w = let p = max 0 (w - length s)
-               in replicate (p `div` 2) ' ' ++ s ++ replicate (p - p `div` 2) ' '
+-- | A group label as a bracketed run of box-drawing characters, e.g.
+-- @│── check ───│@, exactly @w@ wide with the label centred inside.
+bracket :: String -> Int -> String
+bracket g w = "│" ++ replicate l '─' ++ " " ++ g ++ " " ++ replicate r '─' ++ "│"
+  where
+    n = max 0 (w - length g - 4)
+    l = n `div` 2
+    r = n - l
 
--- | A table: a centred group row, the header, a dashed rule, then the body.
+-- | A table: a boxed group row, the header, a dashed rule, then the body.
 -- Columns are two spaces apart, each wide enough for the header and every row;
 -- trailing padding is trimmed.
 table :: [String] -> [[String]] -> [String]
