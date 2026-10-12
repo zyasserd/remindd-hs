@@ -33,10 +33,12 @@ in
       type = lib.types.path;
       description = ''
         Directory holding the schedule.  It must contain `main.hs`: a Haskell
-        module that imports `Lib` and provides `main :: IO ()`.  Every other
-        regular file in the directory is installed in `libexec/remindd`,
-        private to the program: the schedule reaches it with `Lib.bundled`, so
-        it never appears on `PATH`.  Executable files keep their executable bit.
+        module that imports `Lib` and provides `main :: IO ()`.  Other `*.hs`
+        files are compiled as modules `main` can import (`Lib.hs` is reserved:
+        `Lib` comes from the module itself).  Every non-Haskell regular file is
+        installed in `libexec/remindd`, private to the program: the schedule
+        reaches it with `Lib.bundled`, so it never appears on `PATH`.
+        Executable files keep their executable bit.
 
         microhs compiles it into the `remindd` command; a compile error fails
         the build.

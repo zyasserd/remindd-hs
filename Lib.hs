@@ -259,13 +259,14 @@ done = do
   set streak 0
 
 -- | A guard that holds while the reminder has not been done for @period@
--- seconds.  A never-done reminder is overdue immediately.  Pair it with a
--- short evaluation period to nag until 'done'.
+-- seconds (i.e. once @now - lastDone >= period@).  A never-done reminder is
+-- overdue immediately.  Pair it with a short evaluation period to nag until
+-- 'done'.
 overdue :: Int -> Act Bool
 overdue period = do
   t <- now
   d <- get lastDone
-  return (t - d > period)
+  return (t - d >= period)
 
 -- | A guard that holds once @test@ has held @n@ evaluations in a row.
 -- (Uses 'streak', so one per reminder; write your own with another 'Var'.)
@@ -287,34 +288,43 @@ sustained n test = do
 
 -- | Append a timestamped, name-tagged line to a log file.
 logAt :: Env -> FilePath -> String -> IO ()
-logAt e p msg = do
+logAt e p msg = appendLine p ("[" ++ envName e ++ "] " ++ msg)
+
+-- | Append a timestamped line to a log file.  Used by 'logAt' (with a reminder
+-- name) and by the lock (which has a state directory but no reminder).
+appendLine :: FilePath -> String -> IO ()
+appendLine p msg = do
   t <- readCmd "date '+%Y-%m-%d %H:%M:%S'"
-  _ <- system ("printf '%s\\n' "
-               ++ shq (t ++ " [" ++ envName e ++ "] " ++ msg)
-               ++ " >> " ++ shq p)
+  _ <- system ("printf '%s\\n' " ++ shq (t ++ " " ++ msg) ++ " >> " ++ shq p)
   return ()
 
 -- | Run a shell command, appending its output to the shared log; true if it
 -- exited successfully.  Every line of the command's output is tagged like a
 -- 'logLine' message (with @|@ marking continuation), so even one shared log has
--- no unattributed lines.  The exit status is captured separately, because the
--- pipeline that does the tagging ends in @awk@, not in the command.
+-- no unattributed lines.  The exit status is captured through a temporary file,
+-- because the pipeline that does the tagging ends in @awk@, not in the command.
 logCmd :: String -> Act Bool
 logCmd cmd = Act $ \e s -> do
   p <- logPath
   logAt e p ("run " ++ cmd)
   t <- readCmd "date '+%Y-%m-%d %H:%M:%S'"
-  let pre = t ++ " [" ++ envName e ++ "] | "
-      st  = p ++ ".exit"
-  _ <- system ("rm -f " ++ shq st)
+  code <- runTagged (t ++ " [" ++ envName e ++ "] | ") p cmd
+  let ok = code == Just "0"
+  logAt e p ("exit " ++ fromMaybe "?" code)
+  return (ok, s)
+
+-- | Run @cmd@, writing every output line to @p@ prefixed with @pre@, and return
+-- the command's exit status as text ('Nothing' if it could not be read).  The
+-- side channel is a @\/tmp@ file (as in 'readCmd'), removed even on failure.
+runTagged :: String -> FilePath -> String -> IO (Maybe String)
+runTagged pre p cmd = do
+  (st, h) <- openTempFile "/tmp" "remindd.exit"
+  hClose h
   _ <- system ( "{ " ++ cmd ++ "; printf '%s' \"$?\" > " ++ shq st ++ "; } 2>&1"
                 ++ " | INFO=" ++ shq pre
                 ++ " awk '{ print ENVIRON[\"INFO\"] $0 }' >> " ++ shq p )
-  code <- readCmd ("cat " ++ shq st)
-  _ <- system ("rm -f " ++ shq st)
-  let ok = code == "0"
-  logAt e p ("exit " ++ if ok then "0" else (if null code then "?" else code))
-  return (ok, s)
+  code <- readCmd ("cat " ++ shq st) `finally` removeFile st
+  return (if null code then Nothing else Just code)
 
 -- | Append one line to the shared log, tagged with this reminder's name.
 logLine :: String -> Act ()
@@ -729,13 +739,17 @@ acquire lock = do
 
 -- | @withLock dir act@ runs @act@ with exclusive access.  A held lock is
 -- waited for briefly; the lock is released only while still ours, and always
--- (even if @act@ throws).
+-- (even if @act@ throws).  If the lock never frees, the skip is logged before
+-- 'die' reports it on stderr -- 'die' exits 0, so a skipped run would otherwise
+-- be indistinguishable from a completed one.
 withLock :: FilePath -> IO () -> IO ()
 withLock dir act = do
   createDirectoryIfMissing True dir
   ok <- acquireWithin 5
-  if not ok then die "another instance holds the lock"
-            else act `finally` releaseLock (lockFile dir)
+  if not ok then do
+      appendLine (dir ++ "/log") "[remindd] skipped: another instance holds the lock"
+      die "another instance holds the lock"
+    else act `finally` releaseLock (lockFile dir)
   where
     acquireWithin 0 = return False
     acquireWithin n = acquire (lockFile dir) >>= \ok ->

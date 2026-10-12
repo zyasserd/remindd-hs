@@ -46,9 +46,11 @@ main = defaultMain schedule
 ```
 
 The module compiles `main.hs` with microhs into the `remindd` command and
-installs it next to `libnotify`.  Any *other* file in the directory is
-installed in `libexec/remindd`, **private to the program** — it never appears on
-`PATH`.  The schedule reaches it with `Lib.bundled`, e.g.:
+installs it next to `libnotify`.  Other `*.hs` files are compiled as modules
+`main.hs` can import (`Lib.hs` is reserved — `Lib` comes from the module).  Any
+*non-Haskell* file in the directory is installed in `libexec/remindd`,
+**private to the program** — it never appears on `PATH`.  The schedule reaches
+it with `Lib.bundled`, e.g.:
 
 ```haskell
 runBackup = do
@@ -197,6 +199,12 @@ software.  At run time it needs:
 - **XDG paths** — state lives under `$XDG_STATE_HOME` (fallback
   `~/.local/state/remindd`); `$REMINDD_PROG` overrides the program path used in
   button callbacks.
+
+**Exit status is always 0.** `remindd` reports errors through `die`, which
+prints to stderr but exits `0` (microhs cannot exit nonzero quietly), so
+`remindd check` is not a reliable failure signal for a timer.  Diagnostics go
+to stderr and the shared log; a check that cannot take the lock logs
+`[remindd] skipped: another instance holds the lock`.
 
 ## Design
 
