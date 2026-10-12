@@ -18,7 +18,9 @@ overdueFor :: Int -> String -> Act Bool
 overdueFor period cmd = do
   t <- now
   m <- readIntCmd cmd
-  return (t - (case m of Just x -> x; Nothing -> 0) > period)
+  return $ case m of
+    Nothing -> False
+    Just x  -> t - x > period
 
 -- | True while the system is /not/ on power-saver.
 powerSaverOff :: Act Bool

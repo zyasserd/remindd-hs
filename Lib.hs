@@ -427,7 +427,7 @@ die :: String -> IO a
 die msg = hPutStrLn stderr ("remindd: " ++ msg) >> exitSuccess
 
 nowSeconds :: IO Int
-nowSeconds = fmap (fromMaybe 0) (readInt "date +%s")
+nowSeconds = readInt "date +%s" >>= maybe (die "cannot read the clock") return
 
 -- | Run a shell command and read its stdout.  Goes through a temp file rather
 -- than 'readProcess', because 'readProcess' means different things under
@@ -477,9 +477,11 @@ shq s = "'" ++ concatMap esc s ++ "'"
     esc '\'' = "'\\''"
     esc c = [c]
 
--- | Mutual exclusion via @mkdir@ (atomic); a lock older than 30s is stale.
--- The lock is always released, even if @act@ throws, so a crash does not
--- leave the next run waiting for the staleness timeout.
+-- | Mutual exclusion by an atomically-claimed lock file.  @set -C@ (noclobber)
+-- makes the shell create and write the file in one @O_EXCL@-guarded step, so
+-- the lock never exists without its timestamp; a holder older than 30s is
+-- stale and may be stolen.  The lock is always released, even if @act@ throws,
+-- so a crash does not leave the next run waiting for the staleness timeout.
 withLock :: FilePath -> IO () -> IO ()
 withLock dir act = do
   createDirectoryIfMissing True dir
@@ -494,24 +496,26 @@ withLock dir act = do
 
 acquire :: FilePath -> IO Bool
 acquire lock = do
-  rc <- system ("mkdir " ++ shq lock ++ " 2>/dev/null")
+  rc <- system ("set -C; date +%s 2>/dev/null > " ++ shq lock)
   case rc of
-    ExitSuccess -> do
-      t <- nowSeconds
-      writeFile (lock ++ "/created") (show t)
-      return True
+    ExitSuccess -> return True
     _ -> do
       stale <- isStale lock
       if stale then system ("rm -rf " ++ shq lock) >> acquire lock
                else return False
 
+-- | A lock is stale if it is gone (someone else will re-claim it) or its
+-- timestamp is over 30s old.  A present but non-numeric file means its holder
+-- is between create and write, so it is /not/ stale -- never steal that.
 isStale :: FilePath -> IO Bool
 isStale lock = do
-  ex <- doesFileExist (lock ++ "/created")
+  ex <- doesFileExist lock
   if not ex then return True else do
-    s <- readFile (lock ++ "/created")
+    s <- readFile lock
     t <- nowSeconds
-    return (maybe True (\ts -> t - ts > 30) (readMaybe s))
+    case readMaybe (trim s) of
+      Just ts -> return (t - ts > 30)
+      Nothing -> return False
 
 
 --------------------------------------------------------------------------------
@@ -555,7 +559,7 @@ pipeline :: String -> String -> [(Button, String)] -> String
 pipeline title body bcs =
   "( k=$(notify-send "
     ++ "--app-name=remindd -h " ++ shq "string:desktop-entry:remindd" ++ " "
-    ++ concatMap (action . fst) bcs ++ "--wait "
+    ++ concatMap (action . fst) bcs ++ "--wait -- "
     ++ shq title ++ " " ++ shq body ++ "); "
     ++ "case \"$k\" in " ++ concatMap arm bcs
     ++ "esac ) </dev/null >/dev/null 2>&1 &"
@@ -568,6 +572,24 @@ pipeline title body bcs =
 -- 8. MAIN
 --------------------------------------------------------------------------------
 
+-- | Reject a schedule that cannot run: a non-positive period (it would make
+-- the derived timer 0 and re-evaluate every tick) or two reminders sharing a
+-- name (they would silently share one state slot in the store).
+validate :: [Reminder] -> IO ()
+validate rs = do
+  mapM_ periodOk rs
+  case duplicates (map rName rs) of
+    []  -> return ()
+    d:_ -> die ("duplicate reminder name: " ++ d)
+  where
+    periodOk r
+      | rEvery r > 0 = return ()
+      | otherwise = die ("reminder " ++ rName r ++ ": period must be positive")
+
+duplicates :: Eq a => [a] -> [a]
+duplicates [] = []
+duplicates (x:xs) = if x `elem` xs then x : duplicates xs else duplicates xs
+
 -- | Dispatch @check | list | interval | reset <name> | run <name> [<handler>]@.
 -- The program path used in callbacks can be overridden with @REMINDD_PROG@;
 -- otherwise the executable is assumed to be named @remindd@ (what Nix
@@ -577,6 +599,7 @@ defaultMain reminders = do
   args <- getArgs
   prog <- fmap (fromMaybe "remindd") (lookupEnv "REMINDD_PROG")
   let rs = collect reminders
+  validate rs
   case args of
     ["interval"] -> interval rs
     _ -> do
