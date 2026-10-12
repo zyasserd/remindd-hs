@@ -8,7 +8,7 @@ module Lib
   , Var, var, get, set, modify
     -- * Actions
   , Act, io, now, callback, shell, succeeds, readIntCmd
-  , lastModified
+  , lastModified, bundled
   , snooze, sustained, overdue, done
     -- * Logging
   , logLine, logCmd, logPath
@@ -155,6 +155,22 @@ modify v f = get v >>= set v . f
 callback :: String -> Act String
 callback h =
   asks (\e -> unwords (map shq [envProg e, "run", envName e, h]))
+
+-- | Absolute path to a helper bundled with the program.  The Nix module
+-- installs such helpers in @libexec/remindd@ next to @remindd@ (which lives in
+-- @bin@), so we resolve relative to @$REMINDD_PROG@.  This keeps helpers out
+-- of @PATH@: they belong to the program, not the environment.
+bundled :: FilePath -> Act FilePath
+bundled name = do
+  p <- asks envProg
+  io $ do
+    prog <- if '/' `elem` p then return p
+                            else readCmd ("command -v " ++ shq p)
+    return (dirname prog ++ "/../libexec/remindd/" ++ name)
+
+-- | Everything up to (not including) the last @'/'@; @""@ if there is none.
+dirname :: FilePath -> FilePath
+dirname = reverse . dropWhile (/= '/') . reverse
 
 -- | Run a shell command, ignoring the result.
 shell :: String -> Act ()

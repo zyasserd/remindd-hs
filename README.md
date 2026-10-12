@@ -47,11 +47,20 @@ main = defaultMain schedule
 
 The module compiles `main.hs` with microhs into the `remindd` command and
 installs it next to `libnotify`.  Any *other* file in the directory is
-installed alongside `remindd` as an executable, so the schedule can call a
-helper script by name (e.g. `snapshotCmd = "backup-kopia-hetzner.sh"`).  It runs
-`remindd check` on a systemd **user timer** (`remindd-check`).  The timer's period
-is `remindd interval` — the shortest reminder period — read from the built
-schedule at evaluation time, so it behaves like remindd's derived interval.
+installed in `libexec/remindd`, **private to the program** — it never appears on
+`PATH`.  The schedule reaches it with `Lib.bundled`, e.g.:
+
+```haskell
+runBackup = do
+  cmd <- bundled "backup-kopia-hetzner.sh"
+  ok <- logCmd cmd
+  ...
+```
+
+It runs `remindd check` on a systemd **user timer** (`remindd-check`).  The
+timer's period is `remindd interval` — the shortest reminder period — read from
+the built schedule at evaluation time, so it behaves like remindd's derived
+interval.
 
 ## Build a standalone binary
 
