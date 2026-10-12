@@ -472,7 +472,7 @@ resetCmd dir rs name = do
 
 -- | One aligned row per reminder.  The columns come in two groups, because a
 -- reminder has two clocks.  The /check/ group is the scheduler's side: @every@
--- (its period), @checked@ (when its guards last ran, 'lastCheck') and @next@
+-- (its period), @last@ (when its guards last ran, 'lastCheck') and @next@
 -- (@snoozed@/@due@/@in@ -- when it will be looked at again, from 'nextEval').
 -- The /act/ group is what has actually happened: @fired@ (when its effects last
 -- ran, 'lastNotifiedAt') and @done@ (when you last acknowledged it).  A guard's
@@ -502,7 +502,7 @@ rows t rs st = case rs of
   [] -> []
   _  -> if any hasSummary rs then header : body else map init (header : body)
   where
-    header = ["name", "every", "checked", "next", "fired", "done", "summary"]
+    header = ["name", "every", "last", "next", "fired", "done", "summary"]
     body = map (\r -> row t r (fieldsOf (rName r) st)) rs
     hasSummary r = not (null (rSummary r t (fieldsOf (rName r) st)))
 

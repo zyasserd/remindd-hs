@@ -81,14 +81,14 @@ with GHC.
 | command                     | meaning                                          |
 |-----------------------------|--------------------------------------------------|
 | `remindd check`               | evaluate due reminders; send notifications       |
-| `remindd list`                | per reminder: a **check** group (every, checked, next) and an **act** group (fired, done), plus summary |
+| `remindd list`                | per reminder: a **check** group (every, last, next) and an **act** group (fired, done), plus summary |
 | `remindd interval`            | shortest period, in seconds (for a timer)        |
 | `remindd run <name>`          | acknowledge a reminder (mark it done now)        |
 | `remindd run <name> <button>` | run one of its notification buttons              |
 | `remindd reset <name>`        | forget a reminder's state, so it is due again    |
 
 `list` has two groups of columns, because a reminder has two clocks.  **check**
-is the scheduler's side: `every` (its period), `checked` (when its guards last
+is the scheduler's side: `every` (its period), `last` (when its guards last
 ran) and `next` (`due` / `in 5m` / `snoozed 2h` — when it will be looked at
 again).  **act** is what has actually happened: `fired` (when its effects last
 ran — the program notified or executed) and `done` (when *you* last
