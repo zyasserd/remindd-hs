@@ -545,7 +545,7 @@ rowLine ws = trim . join . zipWith pad ws
 -- | The group header: each label boxed over the columns it spans, a run of the
 -- same label merged, and ungrouped columns left blank.
 groupLine :: [Int] -> [String] -> String
-groupLine ws gs = trim (go 0 gs)
+groupLine ws gs = rstrip (go 0 gs)
   where
     go _ [] = ""
     go i (g:rest)
@@ -557,9 +557,9 @@ groupLine ws gs = trim (go 0 gs)
           in bracket g w ++ "  " ++ go (j + 1) (drop (length same - 1) rest)
 
 -- | A group label as a bracketed run of box-drawing characters, e.g.
--- @│── check ───│@, exactly @w@ wide with the label centred inside.
+-- @╭── check ───╮@, exactly @w@ wide with the label centred inside.
 bracket :: String -> Int -> String
-bracket g w = "│" ++ replicate l '─' ++ " " ++ g ++ " " ++ replicate r '─' ++ "│"
+bracket g w = "╭" ++ replicate l '─' ++ " " ++ g ++ " " ++ replicate r '─' ++ "╮"
   where
     n = max 0 (w - length g - 4)
     l = n `div` 2
@@ -573,7 +573,7 @@ table _ [] = []
 table gs (header:body) = groupLine ws gs : rowLine ws header : rule : map (rowLine ws) body
   where
     ws = foldr (zipWith max) (repeat 0) (map (map length) (header : body))
-    rule = trim (join (map (`replicate` '-') ws))
+    rule = rstrip (join (map (`replicate` '─') ws))
     join = foldr1 (\a b -> a ++ "  " ++ b)
 
 -- | A duration as @k@ of its largest non-zero units.
@@ -642,6 +642,11 @@ readCmd c = do
 
 trim :: String -> String
 trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
+
+-- | Remove trailing whitespace but /keep/ leading whitespace, so a line that
+-- starts with column padding (the group row) stays aligned.
+rstrip :: String -> String
+rstrip = reverse . dropWhile isSpace . reverse
 
 -- | Run a shell command and parse its stdout as an integer.
 readInt :: String -> IO (Maybe Int)
