@@ -8,6 +8,7 @@ module Lib
   , Var, var, get, set, modify
     -- * Actions
   , Act, io, now, callback, shell, succeeds, readIntCmd
+  , lastModified
   , snooze, sustained, overdue, done
     -- * Logging
   , logLine, logCmd, logPath
@@ -170,6 +171,17 @@ succeeds = io . success
 -- | Run a shell command and parse its stdout as an integer.
 readIntCmd :: String -> Act (Maybe Int)
 readIntCmd = io . readInt
+
+-- | Seconds since the file at @path@ was last modified.  A missing file reads
+-- as @0@, so it is never overdue:
+--
+-- > provided (do age <- lastModified "flake.lock"
+-- >              return (age >= 3 * week))
+lastModified :: String -> Act Int
+lastModified path = do
+  t <- now
+  m <- readIntCmd ("stat -c %Y " ++ shq path)
+  return (maybe 0 (t -) m)
 
 -- | Silence this reminder for @d@ seconds: evaluation is skipped entirely
 -- until then.
