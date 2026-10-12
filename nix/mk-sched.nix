@@ -3,7 +3,7 @@
 # The directory must contain `main.hs`: a module that imports `Lib` and
 # provides `main :: IO ()`.  Other `*.hs` files are compiled as modules `main`
 # can import (but `Lib.hs` is reserved -- `Lib` comes from this flake).  Every
-# /non-Haskell/ regular file is installed in `$out/libexec/remindd`, private to
+# non-Haskell regular file is installed in `$out/libexec/remindd`, private to
 # the program -- the schedule reaches it with `Lib.bundled`, so it never
 # appears on `PATH`.
 { pkgs, dir }:

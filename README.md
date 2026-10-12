@@ -1,6 +1,6 @@
 # remindd-hs
 
-A tiny, stateless desktop reminder scheduler, written in Haskell for
+A tiny, daemonless desktop reminder scheduler, written in Haskell for
 microhs.  A reminder is a **period**, some **guards** and some **effects**:
 
 ```haskell
