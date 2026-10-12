@@ -5,7 +5,7 @@ let
 
   checkServiceName = "remindd-check";
 
-  # The shortest reminder period, read from the program itself.  This builds
+  # The shortest reminder period, read from the schedule itself.  This builds
   # `remindd` and runs `remindd interval` during evaluation (import-from-
   # derivation), the same way remindd derived its timer from the smallest
   # `every`.  Forced only when the module is enabled.
@@ -22,37 +22,31 @@ let
       ));
     in
     if seconds == ""
-    then throw "services.remindd: the program defines no reminders, so there is no interval"
+    then throw "services.remindd: the schedule defines no reminders, so there is no interval"
     else seconds;
 in
 {
   options.services.remindd = {
     enable = lib.mkEnableOption "remindd, the microhs reminder scheduler";
 
-    program = lib.mkOption {
-      type = lib.types.lines;
+    source = lib.mkOption {
+      type = lib.types.path;
       description = ''
-        The schedule, as Haskell source for a module that imports `Lib` and
-        provides `main :: IO ()`.  microhs compiles it into the `remindd`
-        command; a compile error fails the build.
-      '';
-      example = ''
-        import Lib
+        Directory holding the schedule.  It must contain `main.hs`: a Haskell
+        module that imports `Lib` and provides `main :: IO ()`.  Every other
+        regular file in the directory is installed next to `remindd` as an
+        executable, so the schedule can invoke it by name.
 
-        schedule :: Schedule ()
-        schedule =
-          remind "water" (45 * minute) $
-            notify "Water" "Drink something" []
-
-        main :: IO ()
-        main = defaultMain schedule
+        microhs compiles it into the `remindd` command; a compile error fails
+        the build.
       '';
+      example = lib.literalExpression "./remindd";
     };
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = mkSched { inherit pkgs; program = cfg.program; };
-      defaultText = lib.literalExpression "remindd built from services.remindd.program";
+      default = mkSched { inherit pkgs; dir = cfg.source; };
+      defaultText = lib.literalExpression "remindd built from services.remindd.source";
       description = "The compiled `remindd` package to install.";
     };
   };

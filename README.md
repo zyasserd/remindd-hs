@@ -27,25 +27,31 @@ imports = [ inputs.remindd-hs.homeManagerModules.remindd ];
 
 services.remindd = {
   enable = true;
-  program = ''
-    import Lib
-
-    schedule :: Schedule ()
-    schedule =
-      remind "water" (45 * minute) $
-        notify "Water" "Drink something" []
-
-    main :: IO ()
-    main = defaultMain schedule
-  '';
+  source = ./remindd;   # a directory; it must contain main.hs
 };
 ```
 
-The module compiles `program` with microhs into the `remindd` command, installs
-it next to `libnotify`, and runs `remindd check` on a systemd **user timer**
-(`remindd-check`).  The timer's period is `remindd interval` — the shortest
-reminder period — read from the built program at evaluation time, so it
-behaves like remindd's derived interval.
+The schedule lives in `main.hs` inside that directory:
+
+```haskell
+import Lib
+
+schedule :: Schedule ()
+schedule =
+  remind "water" (45 * minute) $
+    notify "Water" "Drink something" []
+
+main :: IO ()
+main = defaultMain schedule
+```
+
+The module compiles `main.hs` with microhs into the `remindd` command and
+installs it next to `libnotify`.  Any *other* file in the directory is
+installed alongside `remindd` as an executable, so the schedule can call a
+helper script by name (e.g. `snapshotCmd = "backup-kopia-hetzner.sh"`).  It runs
+`remindd check` on a systemd **user timer** (`remindd-check`).  The timer's period
+is `remindd interval` — the shortest reminder period — read from the built
+schedule at evaluation time, so it behaves like remindd's derived interval.
 
 ## Build a standalone binary
 

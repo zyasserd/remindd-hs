@@ -7,30 +7,9 @@
     let
       hmModule = import ./nix/home-manager.nix;
 
-      # Compile one schedule (the `services.remindd.program` source) into the
-      # `remindd` command.  `Lib` comes from this flake's source tree.
-      mkSched = { pkgs, program }:
-        pkgs.stdenv.mkDerivation {
-          pname = "remindd";
-          version = "0.1.0";
-
-          src = ./.;
-
-          nativeBuildInputs = [ pkgs.microhs pkgs.stdenv.cc ];
-
-          buildPhase = ''
-            runHook preBuild
-            cp ${pkgs.writeText "schedule.hs" program} schedule.hs
-            mhs schedule.hs -o remindd
-            runHook postBuild
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            install -Dm755 remindd $out/bin/remindd
-            runHook postInstall
-          '';
-        };
+      # Compile a schedule directory (see nix/mk-sched.nix) into the `remindd`
+      # command.
+      mkSched = import ./nix/mk-sched.nix;
     in
     {
       homeManagerModules.remindd = { pkgs, ... }: {
