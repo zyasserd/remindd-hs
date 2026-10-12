@@ -8,7 +8,7 @@ module Lib
   , Var, var, get, set, modify
   , lastCheck, lastDone, snoozedUntil, streak, lastNotifiedAt
     -- * Display
-  , View, get', now'
+  , View, get', now', humanize, ago
     -- * Actions
   , Act, io, now, callback, shell, succeeds, readIntCmd
   , lastModified, bundled

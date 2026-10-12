@@ -105,7 +105,10 @@ with GHC.
   `summary (do s <- get' streak; return ("streak " ++ show s ++ " of 3"))`.
   `View` is a pure read of the reminder's state (`get'`, `now'`, and the core
   `Var`s `lastDone`, `streak`, …), so listing can never notify or change
-  anything.  The `summary` column only appears once some reminder defines one.
+  anything.  `humanize` and `ago` render durations (`3w`, `2h ago`).  The
+  `summary` column only appears once some reminder defines one.  To describe
+  something a guard measures live (a file's age, a command's output), have the
+  guard `set` it into a `Var` first and read that back in the summary.
 
 **Notifying is not doing.**  A reminder is evaluated once per `period`; while
 its guards hold it notifies every time, so it keeps nagging until an action
