@@ -510,13 +510,19 @@ ago t v
   | t <= v    = "just now"
   | otherwise = humanize (t - v) ++ " ago"
 
--- | Left-align columns, one space apart, each wide enough for every row
--- (header included); trailing padding is trimmed.
+-- | Left-align columns, two spaces apart, each wide enough for every row
+-- (header included), with a dashed rule under the header; trailing padding is
+-- trimmed.  The first row is the header.
 table :: [[String]] -> [String]
-table ws = map (trim . unwords . zipWith pad widths) ws
+table ws = case ws of
+  []            -> []
+  (header:body) -> line header : rule : map line body
   where
     widths = foldr (zipWith max) (repeat 0) (map (map length) ws)
+    line = trim . join . zipWith pad widths
+    rule = trim . join . map (`replicate` '-') $ widths
     pad w s = s ++ replicate (w - length s) ' '
+    join = foldr1 (\a b -> a ++ "  " ++ b)
 
 -- | A duration as @k@ of its largest non-zero units.
 humanizeN :: Int -> Int -> String
