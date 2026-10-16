@@ -12,6 +12,10 @@
       mkSched = import ./nix/mk-sched.nix;
     in
     {
+      # Compile a schedule directory into the `remindd` command.  Exposed so a
+      # configuration can build its own, e.g. with extra runtime programs:
+      # `mkSched { inherit pkgs; dir = ./remindd; runtimeInputs = [ pkgs.urlwatch ]; }`
+      inherit mkSched;
       homeManagerModules.remindd = { pkgs, ... }: {
         imports = [ hmModule ];
         _module.args.mkSched = mkSched;

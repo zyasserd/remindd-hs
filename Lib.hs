@@ -10,7 +10,7 @@ module Lib
     -- * Display
   , View, get', now', dueAt, dueIn, humanize, ago
     -- * Actions
-  , Act, io, now, callback, shell, succeeds, readIntCmd
+  , Act, io, now, callback, shell, succeeds, readIntCmd, readStringCmd
   , lastModified, bundled
   , snooze, sustained, overdue, done
     -- * Logging
@@ -245,6 +245,14 @@ succeeds = io . success
 -- | Run a shell command and parse its stdout as an integer.
 readIntCmd :: String -> Act (Maybe Int)
 readIntCmd = io . readInt
+
+-- | Run a shell command and capture its stdout, trimmed, or 'Nothing' when it
+-- produced nothing (for example because the command failed).  The text
+-- counterpart of 'readIntCmd': use it to store a page hash, a token, a version
+-- -- anything 'Show'/'Read' handles further down in a 'Var'.
+readStringCmd :: String -> Act (Maybe String)
+readStringCmd c = io (fmap keep (readCmd c))
+  where keep s = if null s then Nothing else Just s
 
 -- | Seconds since the file at @path@ was last modified.  A missing file reads
 -- as @0@, so it is never overdue:

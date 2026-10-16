@@ -28,6 +28,7 @@ imports = [ inputs.remindd-hs.homeManagerModules.remindd ];
 services.remindd = {
   enable = true;
   source = ./remindd;   # a directory; it must contain main.hs
+  runtimeInputs = [ pkgs.urlwatch ];   # programs the schedule shells out to
 };
 ```
 
@@ -58,6 +59,10 @@ runBackup = do
   ok <- logCmd cmd
   ...
 ```
+
+For an *ordinary* program the schedule calls by name (`urlwatch`, `git`, …),
+use `runtimeInputs`: each is put on `remindd`'s `PATH` by wrapping the binary,
+so it is found however the timer is started, and pulled into the closure.
 
 It runs `remindd check` on a systemd **user timer** (`remindd-check`).  The
 timer's period is `remindd interval` — the shortest reminder period — read from
@@ -136,9 +141,9 @@ calls `done` (or you `snooze` it).  Firing changes no schedule state — only
 
 ### Effects (`Act a`)
 
-`io`, `now`, `shell`, `succeeds`, `readIntCmd`, `lastModified`, `bundled`,
-`callback`, `logLine`, `logCmd`, plus the core state actions.  Ordinary `do`
-notation; anything `IO` lifts with `io`.
+`io`, `now`, `shell`, `succeeds`, `readIntCmd`, `readStringCmd`, `lastModified`,
+`bundled`, `callback`, `logLine`, `logCmd`, plus the core state actions.
+Ordinary `do` notation; anything `IO` lifts with `io`.
 
 ### Notifications (extension)
 

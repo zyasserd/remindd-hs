@@ -6,7 +6,21 @@
 # non-Haskell regular file is installed in `$out/libexec/remindd`, private to
 # the program -- the schedule reaches it with `Lib.bundled`, so it never
 # appears on `PATH`.
-{ pkgs, dir }:
+#
+# `runtimeInputs` are programs the schedule shells out to (`Lib.succeeds`,
+# `Lib.readStringCmd`, `Lib.shell`).  They are not helpers, so they do not live
+# in `libexec`; they are put on the program's `PATH` by wrapping it, which also
+# pulls them into the `remindd` closure.  Point a schedule at `urlwatch` this
+# way, for instance.
+{ pkgs, dir, runtimeInputs ? [] }:
+
+let
+  lib = pkgs.lib;
+  # Only wrap when there is something to add: `--prefix PATH : ""` would inject
+  # an empty element, i.e. the current directory, into PATH.
+  wrap = lib.optionalString (runtimeInputs != [])
+    "wrapProgram $out/bin/remindd --prefix PATH : ${lib.makeBinPath runtimeInputs}";
+in
 
 pkgs.stdenv.mkDerivation {
   pname = "remindd";
@@ -14,7 +28,7 @@ pkgs.stdenv.mkDerivation {
 
   src = ../.;
 
-  nativeBuildInputs = [ pkgs.microhs pkgs.stdenv.cc ];
+  nativeBuildInputs = [ pkgs.microhs pkgs.stdenv.cc pkgs.makeWrapper ];
 
   buildPhase = ''
     runHook preBuild
@@ -46,6 +60,7 @@ pkgs.stdenv.mkDerivation {
         install -Dm644 "$f" "$out/libexec/remindd/$base"
       fi
     done
+    ${wrap}
     runHook postInstall
   '';
 }

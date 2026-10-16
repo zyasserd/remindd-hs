@@ -48,9 +48,21 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = mkSched { inherit pkgs; dir = cfg.source; };
+      default = mkSched { inherit pkgs; dir = cfg.source; runtimeInputs = cfg.runtimeInputs; };
       defaultText = lib.literalExpression "remindd built from services.remindd.source";
       description = "The compiled `remindd` package to install.";
+    };
+
+    runtimeInputs = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ ];
+      description = ''
+        Programs the schedule shells out to (via `Lib.succeeds`,
+        `Lib.readStringCmd` or `Lib.shell`), placed on `remindd`'s `PATH` and
+        pulled into its closure.  Put them here rather than relying on the
+        session `PATH`, so the timer finds them however it is started.
+      '';
+      example = lib.literalExpression "[ pkgs.urlwatch ]";
     };
   };
 
