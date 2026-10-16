@@ -57,7 +57,9 @@ schedule = do
   -- evaluated daily; overdue once 3 weeks have passed since it was last done,
   -- so it nags once a day until you mark it done.
   remind "backupSSD" day $ do
-    provided (overdue (3 * week))
+    let period = 3 * week
+    provided (overdue period)
+    summary (dueIn period)
     notify "SSD Backup" "Time to back up the SSD"
       [ button "done" "Mark Done & Open Kopia"
           (do done; shell "xdg-open 'http://kopia.local'")
@@ -65,7 +67,9 @@ schedule = do
 
   -- same, weekly.
   remind "backupFF" day $ do
-    provided (overdue week)
+    let period = week
+    provided (overdue period)
+    summary (dueIn period)
     notify "FolderFort Backup" "Time for a FolderFort backup"
       [ button "done" "Mark Done & Open Kopia"
           (do done; shell "xdg-open 'http://kopia.local'")

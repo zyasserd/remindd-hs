@@ -95,7 +95,9 @@ ran — the program notified or executed) and `done` (when *you* last
 acknowledged).  Firing does not acknowledge, so the two move independently: a
 reminder can fire many times without ever being done — that is what nagging
 means — and `done` can happen before it ever fires.  A guard's outcome is never
-stored, so it is not shown; only a `summary` can reveal it.  The `summary`
+stored, so it is not shown; only a `summary` can reveal it, and a `summary` is
+also where you predict when a guard will next hold (e.g. `lastDone + period`),
+since `next` only says when the scheduler will next *look*.  The `summary`
 column appears only once some reminder defines one.
 
 ## Writing a schedule
@@ -117,6 +119,9 @@ column appears only once some reminder defines one.
   read and write it.  A reminder's state is isolated from every other's.
 - `summary (View String)` adds a one-line description to `remindd list`, e.g.
   `summary (do s <- get' streak; return ("streak " ++ show s ++ " of 3"))`.
+  Since `list` never runs guards, this is also where you predict act timing:
+  `dueIn period` (companion to `overdue`) reads `"due in 2w"` from
+  `lastDone + period`, and `dueAt instant` renders any deadline you computed.
   `View` is a pure read of the reminder's state (`get'`, `now'`, and the core
   `Var`s `lastDone`, `streak`, …), so listing can never notify or change
   anything.  `humanize` and `ago` render durations (`3w`, `2h ago`).  The

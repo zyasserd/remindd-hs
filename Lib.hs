@@ -8,7 +8,7 @@ module Lib
   , Var, var, get, set, modify
   , lastCheck, lastDone, snoozedUntil, streak, lastNotifiedAt
     -- * Display
-  , View, get', now', humanize, ago
+  , View, get', now', dueAt, dueIn, humanize, ago
     -- * Actions
   , Act, io, now, callback, shell, succeeds, readIntCmd
   , lastModified, bundled
@@ -124,6 +124,21 @@ get' v = View $ \_ fs -> peek v fs
 -- | The instant of the evaluation, for display.
 now' :: View Int
 now' = View $ \t _ -> t
+
+-- | Render a deadline instant for a 'summary': @due now@ or @due in 2w@.
+dueAt :: Int -> View String
+dueAt d = do
+  t <- now'
+  return (if d <= t then "due now" else "due in " ++ humanize (d - t))
+
+-- | Companion to 'overdue': when the reminder will next act, @lastDone +
+-- period@.  A never-done reminder counts from the epoch, so it reads as due at
+-- once.  Pair it with a 'summary' so @list@ shows the act time, not just the
+-- scheduler's next look.
+dueIn :: Int -> View String
+dueIn period = do
+  d <- get' lastDone
+  dueAt (d + period)
 
 
 --------------------------------------------------------------------------------
